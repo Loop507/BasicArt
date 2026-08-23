@@ -67,10 +67,23 @@ def analizza_audio(path_audio, fps, durata_max=MAX_DURATION_S):
         rng = arr.max() - arr.min()
         return (arr - arr.min()) / rng if rng > 1e-9 else np.zeros_like(arr)
 
+    rms = norm(rms)
+    centroid = norm(centroid)
+    onset_env = norm(onset_env)
+
+    def smussa(arr, alpha=0.12):
+        """Media mobile esponenziale: evita salti bruschi frame-per-frame
+        che rendono il disegno caotico invece che fluido."""
+        out = np.empty_like(arr)
+        out[0] = arr[0]
+        for i in range(1, len(arr)):
+            out[i] = alpha * arr[i] + (1 - alpha) * out[i - 1]
+        return out
+
     return {
-        "rms": norm(rms),
-        "centroid": norm(centroid),
-        "onset": norm(onset_env),
+        "rms": smussa(rms),
+        "centroid": smussa(centroid),
+        "onset": smussa(onset_env, alpha=0.20),   # onset resta un po' piu' reattivo
         "durata": durata,
         "n_frames": n_frames,
         "sr": sr,
@@ -95,10 +108,10 @@ def disegna_frame(canvas, t_frame, feat_rms, feat_centroid, feat_onset, cx, cy, 
     """Disegna un frame del pattern non-periodico pilotato dall'audio (vettorizzato NumPy)."""
     # canvas gia' sfumato (fade) prima della chiamata
 
-    amp = raggio * (0.35 + 0.65 * feat_rms)            # energia -> ampiezza
-    k = 2.0 + 8.0 * feat_centroid                       # brillantezza -> frequenza secondaria
-    dt = 0.02 + 0.015 * feat_onset                      # onset/beat -> passo di campionamento
-    offset = t_frame * 0.004 + feat_onset * 0.6         # deriva lenta + scatto sui beat
+    amp = raggio * (0.6 + 0.4 * feat_rms)               # energia -> ampiezza (base piu' alta = piu' visibile)
+    k = 2.0 + 4.0 * feat_centroid                        # brillantezza -> frequenza secondaria (range ridotto = meno caos)
+    dt = 0.02 + 0.008 * feat_onset                       # onset/beat -> passo di campionamento (variazione piu' contenuta)
+    offset = t_frame * 0.004 + feat_onset * 0.3          # deriva lenta + scatto morbido sui beat
 
     t1_vals = t1_arr * dt                               # t1 = i * dt, vettorizzato
     t2_vals = offset + t1_arr * dt                      # t2 = offset + i * dt, vettorizzato
@@ -109,14 +122,11 @@ def disegna_frame(canvas, t_frame, feat_rms, feat_centroid, feat_onset, cx, cy, 
     xs = (cx + f(t2_vals)).astype(np.int32)
     ys = (cy + f(t1_vals)).astype(np.int32)
 
-    h, w = canvas.shape[:2]
-    dentro = (xs >= 0) & (xs < w) & (ys >= 0) & (ys < h)
-    xs, ys = xs[dentro], ys[dentro]
-
     intensita = 0.70 + 0.30 * feat_onset
-    colore = np.array([min(int(c * intensita), 255) for c in colore_fg], dtype=np.uint8)
+    colore = tuple(min(int(c * intensita), 255) for c in colore_fg)
 
-    canvas[ys, xs] = colore   # scrittura vettorizzata dei punti (no loop Python)
+    pts = np.stack([xs, ys], axis=1).reshape(-1, 1, 2)
+    cv2.polylines(canvas, [pts], isClosed=False, color=colore, thickness=2, lineType=cv2.LINE_AA)
 
     return canvas
 
@@ -124,7 +134,7 @@ def disegna_frame(canvas, t_frame, feat_rms, feat_centroid, feat_onset, cx, cy, 
 def genera_video(feat, path_out, width, height, colore_bg, colore_fg, fps=FPS, seed=507):
     np.random.seed(seed)
     cx, cy = width // 2, height // 2
-    raggio = min(width, height) * 0.30
+    raggio = min(width, height) * 0.22   # proporzione calibrata sul riferimento BASIC originale
     n_step = 900
     t1_arr = np.arange(n_step, dtype=np.float64)   # indice pre-calcolato una sola volta
 
