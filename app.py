@@ -9,8 +9,8 @@ DSP pura del segnale (librosa). Nessun modello AI/neurale.
 
 Due motori grafici disponibili (stessa famiglia di equazioni,
 proiezioni diverse):
-- "Ellisse"  : x=f(t2), y=f(t1)                  (coordinate cartesiane)
-- "Loto"     : r=f(t2), a=f(t1), x=r*cos(a) ...  (coordinate polari)
+- "Deriva"     : x=f(t2), y=f(t1)                  (coordinate cartesiane)
+- "Fioritura"  : r=f(t2), a=f(t1), x=r*cos(a) ...  (coordinate polari)
 
 Loop507 protocol:
 - py_compile / pyflakes zero warnings
@@ -40,7 +40,7 @@ RISOLUZIONI = {
     "1:1   (720x720)": (720, 720),
 }
 
-FORME = ["Ellisse (cartesiana)", "Loto (polare)"]
+FORME = ["Deriva (cartesiana)", "Fioritura (polare)"]
 
 st.set_page_config(page_title="BasicArt // Loop507", layout="centered")
 
@@ -196,7 +196,7 @@ def _parametri_da_audio(feat, i, t_frame, fps, reattivita=1.0):
     k1 = np.clip(2.0 + (3.0 * centroid + 2.0 * alti) * reattivita, 2.0, 9.0)   # timbro/alti
     k2 = np.clip(2.0 + 3.0 * medi * reattivita, 2.0, 9.0)                       # medi
 
-    # per il pattern Loto (polare) le due componenti r e a devono condividere
+    # per il pattern Fioritura (polare) le due componenti r e a devono condividere
     # la STESSA frequenza secondaria (come nel riferimento BASIC originale,
     # k=3.5 fisso per entrambe): usare due k diversi rompe la correlazione
     # armonica e trasforma i petali puliti in un groviglio denso stile Lissajous
@@ -244,7 +244,7 @@ def disegna_loto(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_fg
     """Pattern polare: r=f(t2), a=f(t1), x=r*cos(a), y=r*sin(a).
     r e a condividono la stessa frequenza secondaria k (come nel BASIC
     originale) per mantenere la simmetria a petali. A differenza
-    dell'Ellisse, qui i punti vengono tracciati SPARSI (stile PLOT del
+    dell'Deriva, qui i punti vengono tracciati SPARSI (stile PLOT del
     BASIC originale) e non collegati con linee: la struttura a petali
     del "fiore di loto" emerge dall'accumulo di punti isolati nel tempo,
     non da una curva continua. Scala anisotropica per riempire meglio
@@ -403,16 +403,14 @@ def mux_audio(path_video_muto, path_audio, path_out, durata):
 
 
 def genera_report(nome_file, forma, width, height, risoluzione_label, feat,
-                   hex_bg, hex_fg, densita, spessore, reattivita, seed):
-    """Report bilingue IT/EN stile Loop507 (sezioni complete separate,
-    formattazione '::', firma e hashtag finali). Restituisce sia la
-    versione da mostrare in chat (con code-fence) sia il testo grezzo
-    per il download."""
-    separatore = "------------------------------------------------------------"
-
+                   hex_bg, hex_fg, densita, spessore, reattivita, seed, vol):
+    """Report bilingue IT/EN stile Loop507 (blocco IT completo seguito dal
+    blocco EN completo, formato compatto senza separatori — come da
+    modello fornito). Restituisce sia la versione da mostrare in chat
+    (con code-fence) sia il testo grezzo per il download."""
     it = (
-        ":: BASICART // LOOP507 — REPORT ::\n"
-        f"{separatore}\n"
+        f":: BASICART // Vol. {vol:03d}\n"
+        "REPORT ::\n"
         f"FILE            :: {nome_file}\n"
         f"FORMA           :: {forma}\n"
         f"FORMATO         :: {risoluzione_label}\n"
@@ -426,17 +424,15 @@ def genera_report(nome_file, forma, width, height, risoluzione_label, feat,
         f"SPESSORE        :: {spessore}\n"
         f"REATTIVITA'     :: {reattivita:.2f}x\n"
         f"SEED            :: {seed}\n"
-        f"{separatore}\n"
         "DSP :: RMS, spectral centroid, onset strength, bande bassi/medi/\n"
         "       alti (STFT), beat tracking — nessun modello AI/neurale.\n"
-        f"{separatore}\n"
         "Regia e Algoritmo :: Loop507\n"
         "L'audio e' stato scomposto in frequenze. Il codice ne ha ridisegnato la forma."
     )
 
     en = (
-        ":: BASICART // LOOP507 — REPORT ::\n"
-        f"{separatore}\n"
+        f":: BASICART // Vol. {vol:03d}\n"
+        "REPORT ::\n"
         f"FILE            :: {nome_file}\n"
         f"SHAPE           :: {forma}\n"
         f"RESOLUTION      :: {risoluzione_label}\n"
@@ -450,17 +446,15 @@ def genera_report(nome_file, forma, width, height, risoluzione_label, feat,
         f"THICKNESS       :: {spessore}\n"
         f"REACTIVITY      :: {reattivita:.2f}x\n"
         f"SEED            :: {seed}\n"
-        f"{separatore}\n"
         "DSP :: RMS, spectral centroid, onset strength, low/mid/high\n"
         "       bands (STFT), beat tracking — no AI/neural model.\n"
-        f"{separatore}\n"
         "Direction & Algorithm :: Loop507\n"
         "The audio was broken down into frequencies. The code redrew its shape."
     )
 
-    tag_forma = forma.split(" ")[0]   # "Ellisse" o "Loto"
+    tag_forma = forma.split(" ")[0]   # "Deriva" o "Fioritura"
     hashtags = (
-        f"#Loop507 #BasicArt #{tag_forma} #GenerativeArt #AudioReactive "
+        f"#BasicArt #{tag_forma} #GenerativeArt #AudioReactive "
         f"#DSP #PureDSP #BPM{feat['bpm']:.0f}"
     )
 
@@ -593,9 +587,15 @@ def main():
                 nome_file = "basicart_" + os.path.splitext(file_audio.name)[0] + ".mp4"
                 st.session_state["basicart_video"] = video_bytes
                 st.session_state["basicart_filename"] = nome_file
+
+                # numero di volume progressivo (catalogo Loop507): parte da 000
+                # e sale di uno ad ogni video generato in questa sessione
+                vol = st.session_state.get("basicart_vol_counter", -1) + 1
+                st.session_state["basicart_vol_counter"] = vol
+
                 report_md, report_txt = genera_report(
                     nome_file, forma, width, height, risoluzione_label, feat,
-                    hex_bg, hex_fg, densita, spessore, reattivita, seed=507,
+                    hex_bg, hex_fg, densita, spessore, reattivita, seed=507, vol=vol,
                 )
                 st.session_state["basicart_report_md"] = report_md
                 st.session_state["basicart_report_txt"] = report_txt
@@ -613,6 +613,7 @@ def main():
             mime="video/mp4",
         )
         if "basicart_report_md" in st.session_state:
+            st.subheader("Report")
             st.markdown(st.session_state["basicart_report_md"])
             st.download_button(
                 "Scarica report :: Download report",
