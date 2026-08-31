@@ -342,6 +342,53 @@ def genera_video(feat, path_out, width, height, colore_bg, colore_fg, forma, fps
     progress.empty()
 
 
+def genera_anteprima(feat, width, height, colore_bg, colore_fg, forma, densita, spessore,
+                      reattivita, seed=507, finestra_s=4.0, fps=FPS):
+    """Genera un'immagine statica che mostra come apparirebbe il pattern al
+    picco energetico del brano (RMS+bassi massimi). Simula solo la finestra
+    di pochi secondi che precede il picco (la scia decade rapidamente, quindi
+    il resto del brano non influisce sul risultato) — abbastanza veloce da
+    rigenerare ad ogni modifica degli slider, senza incidere sulla DSP gia'
+    calcolata ne' scrivere un video."""
+    np.random.seed(seed)
+    cx, cy = width // 2, height // 2
+    raggio_x = width * 0.34
+    raggio_y = height * 0.34
+
+    motore = MOTORI[forma]
+    disegna = motore["funzione"]
+    n_step = max(100, int(motore["n_step"] * densita))
+    fade_alpha = motore["fade"]
+    t1_arr = np.arange(n_step, dtype=np.float64)
+
+    energia = 0.6 * feat["rms"] + 0.4 * feat["bassi"]
+    # esclude un margine ai bordi: l'attacco/coda del brano puo' generare un
+    # picco artificiale nella STFT (transiente di inizio/fine file) che non
+    # rappresenta il vero apice energetico del brano
+    margine = min(int(0.5 * fps), max(0, len(energia) // 2 - 1))
+    if len(energia) > 2 * margine:
+        i_picco = margine + int(np.argmax(energia[margine:len(energia) - margine]))
+    else:
+        i_picco = int(np.argmax(energia))
+    i_inizio = max(0, i_picco - int(finestra_s * fps))
+
+    canvas = np.zeros((height, width, 3), dtype=np.float32)
+    bg = np.array(colore_bg, dtype=np.float32)
+
+    for i in range(i_inizio, i_picco + 1):
+        canvas = canvas * fade_alpha + bg * (1 - fade_alpha)
+        canvas_u8 = canvas.astype(np.uint8)
+        canvas_u8 = disegna(
+            canvas_u8, t_frame=i, feat=feat, i=i,
+            cx=cx, cy=cy, raggio_x=raggio_x, raggio_y=raggio_y,
+            colore_fg=colore_fg, t1_arr=t1_arr, fps=fps,
+            reattivita=reattivita, spessore=spessore,
+        )
+        canvas = canvas_u8.astype(np.float32)
+
+    return canvas.astype(np.uint8), i_picco
+
+
 def mux_audio(path_video_muto, path_audio, path_out, durata):
     video_clip = VideoFileClip(path_video_muto)
     audio_clip = AudioFileClip(path_audio).subclipped(0, durata)
@@ -441,6 +488,47 @@ def main():
     width, height = RISOLUZIONI[risoluzione_label]
 
     if file_audio is not None:
+        # L'audio caricato viene salvato una sola volta in un file persistente
+        # (non nella TemporaryDirectory del bottone, che si cancella subito)
+        # cosi' l'anteprima puo' rigenerarsi ad ogni slider senza rifare
+        # l'analisi DSP o il salvataggio del file ogni volta.
+        chiave_file = f"{file_audio.name}:{file_audio.size}"
+        if st.session_state.get("basicart_feat_key") != chiave_file:
+            path_persistente = tempfile.NamedTemporaryFile(
+                delete=False, suffix=os.path.splitext(file_audio.name)[1]
+            ).name
+            with open(path_persistente, "wb") as f:
+                f.write(file_audio.getbuffer())
+            with st.spinner("Analisi DSP del brano :: DSP analysis..."):
+                feat = analizza_audio(path_persistente, FPS)
+            st.session_state["basicart_feat_key"] = chiave_file
+            st.session_state["basicart_feat_value"] = feat
+            st.session_state["basicart_audio_path"] = path_persistente
+        else:
+            feat = st.session_state["basicart_feat_value"]
+
+        st.info(
+            f"DURATA :: {feat['durata']:.1f}s  |  "
+            f"FRAME :: {feat['n_frames']}  |  "
+            f"SR :: {feat['sr']} Hz  |  "
+            f"BPM stimato :: {feat['bpm']:.0f}"
+        )
+
+        # anteprima live al picco energetico del brano: si rigenera automaticamente
+        # ad ogni modifica di forma/colori/slider, senza rifare l'analisi DSP
+        with st.spinner("Aggiornamento anteprima :: Updating preview..."):
+            anteprima_bgr, i_picco = genera_anteprima(
+                feat, width, height, colore_bg, colore_fg, forma,
+                densita, spessore, reattivita,
+            )
+        anteprima_rgb = cv2.cvtColor(anteprima_bgr, cv2.COLOR_BGR2RGB)
+        st.image(
+            anteprima_rgb,
+            caption=f"Anteprima al picco audio ({i_picco / FPS:.1f}s) :: "
+                    f"Preview at audio peak ({i_picco / FPS:.1f}s)",
+            use_container_width=True,
+        )
+
         n_step_stimato = MOTORI[forma]["n_step"] * densita
         fattore_forma = n_step_stimato / 900
         st.caption(
@@ -449,23 +537,8 @@ def main():
             "(indicativo, dipende dal server)"
         )
         if st.button("Genera video :: Generate video", type="primary"):
+            path_in = st.session_state["basicart_audio_path"]
             with tempfile.TemporaryDirectory() as tmp:
-                path_in = os.path.join(tmp, file_audio.name)
-                with open(path_in, "wb") as f:
-                    f.write(file_audio.getbuffer())
-
-                with st.spinner("Analisi DSP del brano :: DSP analysis..."):
-                    feat = analizza_audio(path_in, FPS)
-
-                st.info(
-                    f"DURATA :: {feat['durata']:.1f}s  |  "
-                    f"FRAME :: {feat['n_frames']}  |  "
-                    f"SR :: {feat['sr']} Hz  |  "
-                    f"FORMATO :: {width}x{height}  |  "
-                    f"FORMA :: {forma}  |  "
-                    f"BPM stimato :: {feat['bpm']:.0f}"
-                )
-
                 path_video_muto = os.path.join(tmp, "video_muto.mp4")
                 genera_video(
                     feat, path_video_muto, width, height, colore_bg, colore_fg, forma,
