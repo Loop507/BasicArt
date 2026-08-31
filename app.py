@@ -201,7 +201,8 @@ def _parametri_da_audio(feat, i, t_frame, fps):
     # armonica e trasforma i petali puliti in un groviglio denso stile Lissajous
     k_loto = np.clip(2.6 + 1.2 * centroid + 0.8 * alti + 0.6 * medi, 2.6, 4.4)
 
-    intensita = 0.65 + 0.35 * onset
+    intensita = 0.88 + 0.12 * onset   # baseline alta: il colore scelto resta vivo,
+                                        # l'onset aggiunge solo un lieve guizzo extra
     return fattore_ampiezza, k1, k2, k_loto, onset, intensita, velocita
 
 
@@ -364,7 +365,7 @@ def main():
     with col3:
         hex_bg = st.color_picker("Colore sfondo :: Background color", "#0a0a0a")
     with col4:
-        hex_fg = st.color_picker("Colore animazione :: Animation color", "#ebebeb")
+        hex_fg = st.color_picker("Colore animazione :: Animation color", "#ffffff")
 
     def hex_a_bgr(hex_str):
         hex_str = hex_str.lstrip("#")
