@@ -37,6 +37,7 @@ MAX_DURATION_S = 240             # cap di sicurezza per il rendering (4 minuti)
 RISOLUZIONI = {
     "16:9  (1280x720)": (1280, 720),
     "9:16  (720x1280)": (720, 1280),
+    "1:1   (720x720)": (720, 720),
 }
 
 FORME = ["Ellisse (cartesiana)", "Loto (polare)"]
@@ -90,6 +91,21 @@ def _bande_spettrali(y, sr, hop_length, n_frames):
     return _norm(bassi), _norm(medi), _norm(alti)
 
 
+def _stima_bpm(y, sr):
+    """Stima il tempo (BPM) del brano via beat tracking DSP (no AI).
+    Il valore pilota la velocita' di rotazione/pulsazione del pattern:
+    reinterpretazione originale, non presente negli esempi BASIC di
+    riferimento — collega il "senso del tempo" del brano al motore."""
+    try:
+        tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+        bpm = float(np.atleast_1d(tempo)[0])
+    except Exception:
+        bpm = 120.0
+    if bpm <= 0:
+        bpm = 120.0
+    return bpm
+
+
 # ----------------------------------------------------------------------
 # DSP: estrazione feature audio (pura, no AI)
 # ----------------------------------------------------------------------
@@ -110,6 +126,7 @@ def analizza_audio(path_audio, fps, durata_max=MAX_DURATION_S):
     onset_env = _norm(_adatta(onset_env, n_frames))
 
     bassi, medi, alti = _bande_spettrali(y, sr, hop_length, n_frames)
+    bpm = _stima_bpm(y, sr)
 
     return {
         "rms": _smussa(rms),
@@ -118,6 +135,7 @@ def analizza_audio(path_audio, fps, durata_max=MAX_DURATION_S):
         "bassi": _smussa(bassi),
         "medi": _smussa(medi),
         "alti": _smussa(alti),
+        "bpm": bpm,
         "durata": durata,
         "n_frames": n_frames,
         "sr": sr,
@@ -148,9 +166,9 @@ def analizza_audio(path_audio, fps, durata_max=MAX_DURATION_S):
 # frequenza secondaria, alti/centroide -> l'altra, onset -> ritmo
 # di campionamento e deriva dell'offset.
 # ----------------------------------------------------------------------
-def _parametri_da_audio(feat, i, raggio):
+def _parametri_da_audio(feat, i, t_frame, fps):
     """Calcola i parametri del motore combinando piu' feature audio,
-    cosi' brani diversi (per energia, timbro, bande di frequenza)
+    cosi' brani diversi (per energia, timbro, bande di frequenza, tempo)
     producono disegni chiaramente distinti."""
     rms = feat["rms"][i]
     centroid = feat["centroid"][i]
@@ -158,9 +176,21 @@ def _parametri_da_audio(feat, i, raggio):
     bassi = feat["bassi"][i]
     medi = feat["medi"][i]
     alti = feat["alti"][i]
+    bpm = feat["bpm"]
 
     energia = 0.6 * rms + 0.4 * bassi
-    amp = raggio * (0.55 + 0.45 * energia)
+
+    # velocita' di rotazione/pulsazione ancorata al BPM del brano (reinterpretazione
+    # originale: un brano a 160 BPM "gira" piu' veloce di una ballata a 70 BPM)
+    velocita = np.clip(bpm / 120.0, 0.55, 1.9)
+
+    # pulsazione "a respiro" sincronizzata al beat: una lieve oscillazione
+    # dell'ampiezza al ritmo esatto del brano, indipendente dalla reattivita'
+    # istantanea dell'onset — tocco creativo, non presente nei riferimenti BASIC
+    fase_beat = 2 * np.pi * (bpm / 60.0) * (t_frame / fps)
+    respiro = 1.0 + 0.06 * np.sin(fase_beat)
+
+    fattore_ampiezza = (0.55 + 0.45 * energia) * respiro
 
     k1 = np.clip(2.0 + 3.0 * centroid + 2.0 * alti, 2.0, 7.0)   # timbro/alti
     k2 = np.clip(2.0 + 3.0 * medi, 2.0, 7.0)                     # medi
@@ -172,24 +202,30 @@ def _parametri_da_audio(feat, i, raggio):
     k_loto = np.clip(2.6 + 1.2 * centroid + 0.8 * alti + 0.6 * medi, 2.6, 4.4)
 
     intensita = 0.65 + 0.35 * onset
-    return amp, k1, k2, k_loto, onset, intensita
+    return fattore_ampiezza, k1, k2, k_loto, onset, intensita, velocita
 
 
-def disegna_ellisse(canvas, t_frame, feat, i, cx, cy, raggio, colore_fg, t1_arr):
-    """Pattern cartesiano: x=f(t2), y=f(t1)."""
-    amp, k1, _k2, _k_loto, onset, intensita = _parametri_da_audio(feat, i, raggio)
+def disegna_ellisse(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_fg, t1_arr, fps):
+    """Pattern cartesiano: x=f(t2), y=f(t1). Scala anisotropica (raggio_x/
+    raggio_y separati) per riempire il fotogramma invece di restare confinato
+    al centro — reinterpretazione mia rispetto al riferimento (che usava un
+    unico raggio isotropo su un canvas quadrato)."""
+    fattore, k1, _k2, _k_loto, onset, intensita, velocita = _parametri_da_audio(feat, i, t_frame, fps)
 
-    dt = 0.02 + 0.008 * onset
-    offset = t_frame * 0.004 + onset * 0.3
+    dt = (0.02 + 0.008 * onset) * velocita
+    offset = t_frame * 0.004 * velocita + onset * 0.3
 
     t1_vals = t1_arr * dt
     t2_vals = offset + t1_arr * dt
 
     def f(x):
-        return amp * (np.sin(np.pi * x) + np.sin(k1 * x))
+        return np.sin(np.pi * x) + np.sin(k1 * x)
 
-    xs = (cx + f(t2_vals)).astype(np.int32)
-    ys = (cy + f(t1_vals)).astype(np.int32)
+    fx = f(t2_vals) * fattore
+    fy = f(t1_vals) * fattore
+
+    xs = (cx + raggio_x * fx).astype(np.int32)
+    ys = (cy + raggio_y * fy).astype(np.int32)
 
     colore = tuple(min(int(c * intensita), 255) for c in colore_fg)
     pts = np.stack([xs, ys], axis=1).reshape(-1, 1, 2)
@@ -197,18 +233,20 @@ def disegna_ellisse(canvas, t_frame, feat, i, cx, cy, raggio, colore_fg, t1_arr)
     return canvas
 
 
-def disegna_loto(canvas, t_frame, feat, i, cx, cy, raggio, colore_fg, t1_arr):
+def disegna_loto(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_fg, t1_arr, fps):
     """Pattern polare: r=f(t2), a=f(t1), x=r*cos(a), y=r*sin(a).
     r e a condividono la stessa frequenza secondaria k (come nel BASIC
     originale) per mantenere la simmetria a petali. A differenza
     dell'Ellisse, qui i punti vengono tracciati SPARSI (stile PLOT del
     BASIC originale) e non collegati con linee: la struttura a petali
     del "fiore di loto" emerge dall'accumulo di punti isolati nel tempo,
-    non da una curva continua."""
-    amp, _k1, _k2, k, onset, intensita = _parametri_da_audio(feat, i, raggio)
+    non da una curva continua. Scala anisotropica per riempire meglio
+    formati rettangolari (16:9, 9:16) invece di restare un piccolo
+    medaglione centrale."""
+    fattore, _k1, _k2, k, onset, intensita, velocita = _parametri_da_audio(feat, i, t_frame, fps)
 
-    dt = 0.10 + 0.05 * onset
-    offset = t_frame * 0.002 + onset * 0.10
+    dt = (0.10 + 0.05 * onset) * velocita
+    offset = t_frame * 0.002 * velocita + onset * 0.10
 
     t1_vals = t1_arr * dt
     t2_vals = offset + t1_arr * dt
@@ -216,11 +254,11 @@ def disegna_loto(canvas, t_frame, feat, i, cx, cy, raggio, colore_fg, t1_arr):
     def f(x):
         return np.sin(np.pi * x) + np.sin(k * x)
 
-    r = f(t2_vals)          # bassi/rms -> "respiro" radiale
-    a = f(t1_vals)          # stessa k -> struttura a petali coerente
+    r = f(t2_vals) * fattore
+    a = f(t1_vals)
 
-    xs = (cx + amp * r * np.cos(a)).astype(np.int32)
-    ys = (cy + amp * r * np.sin(a)).astype(np.int32)
+    xs = (cx + raggio_x * r * np.cos(a)).astype(np.int32)
+    ys = (cy + raggio_y * r * np.sin(a)).astype(np.int32)
 
     h, w = canvas.shape[:2]
     dentro = (xs >= 0) & (xs < w) & (ys >= 0) & (ys < h)
@@ -241,7 +279,10 @@ MOTORI = {
 def genera_video(feat, path_out, width, height, colore_bg, colore_fg, forma, fps=FPS, seed=507):
     np.random.seed(seed)
     cx, cy = width // 2, height // 2
-    raggio = min(width, height) * 0.22   # proporzione calibrata sul riferimento BASIC originale
+    # scala anisotropica sui due assi (invece di un unico raggio isotropo):
+    # il pattern si estende a riempire il fotogramma, non solo il centro
+    raggio_x = width * 0.34
+    raggio_y = height * 0.34
 
     motore = MOTORI[forma]
     disegna = motore["funzione"]
@@ -265,8 +306,8 @@ def genera_video(feat, path_out, width, height, colore_bg, colore_fg, forma, fps
         canvas_u8 = canvas.astype(np.uint8)
         canvas_u8 = disegna(
             canvas_u8, t_frame=i, feat=feat, i=i,
-            cx=cx, cy=cy, raggio=raggio,
-            colore_fg=colore_fg, t1_arr=t1_arr,
+            cx=cx, cy=cy, raggio_x=raggio_x, raggio_y=raggio_y,
+            colore_fg=colore_fg, t1_arr=t1_arr, fps=fps,
         )
         canvas = canvas_u8.astype(np.float32)
 
@@ -356,7 +397,8 @@ def main():
                     f"FRAME :: {feat['n_frames']}  |  "
                     f"SR :: {feat['sr']} Hz  |  "
                     f"FORMATO :: {width}x{height}  |  "
-                    f"FORMA :: {forma}"
+                    f"FORMA :: {forma}  |  "
+                    f"BPM stimato :: {feat['bpm']:.0f}"
                 )
 
                 path_video_muto = os.path.join(tmp, "video_muto.mp4")
