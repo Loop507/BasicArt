@@ -404,31 +404,69 @@ def mux_audio(path_video_muto, path_audio, path_out, durata):
 
 def genera_report(nome_file, forma, width, height, risoluzione_label, feat,
                    hex_bg, hex_fg, densita, spessore, reattivita, seed):
-    """Report bilingue IT/EN stile Loop507 (formattazione '::')."""
-    return (
-        "```\n"
+    """Report bilingue IT/EN stile Loop507 (sezioni complete separate,
+    formattazione '::', firma e hashtag finali). Restituisce sia la
+    versione da mostrare in chat (con code-fence) sia il testo grezzo
+    per il download."""
+    separatore = "------------------------------------------------------------"
+
+    it = (
         ":: BASICART // LOOP507 — REPORT ::\n"
-        "------------------------------------------------------------\n"
+        f"{separatore}\n"
         f"FILE            :: {nome_file}\n"
-        f"FORMA / SHAPE   :: {forma}\n"
-        f"FORMATO / RES.  :: {risoluzione_label}\n"
-        f"DURATA / DUR.   :: {feat['durata']:.1f}s\n"
-        f"FRAME / FRAMES  :: {feat['n_frames']} @ {FPS}fps\n"
+        f"FORMA           :: {forma}\n"
+        f"FORMATO         :: {risoluzione_label}\n"
+        f"DURATA          :: {feat['durata']:.1f}s\n"
+        f"FRAME           :: {feat['n_frames']} @ {FPS}fps\n"
         f"SAMPLE RATE     :: {feat['sr']} Hz\n"
-        f"BPM STIMATO/EST.:: {feat['bpm']:.0f}\n"
-        f"COLORE SFONDO / BACKGROUND :: {hex_bg}\n"
-        f"COLORE ANIM. / ANIMATION   :: {hex_fg}\n"
-        f"DENSITA' / DENSITY   :: {densita:.2f}x\n"
-        f"SPESSORE / THICKNESS :: {spessore}\n"
-        f"REATTIVITA' / REACTIVITY :: {reattivita:.2f}x\n"
+        f"BPM STIMATO     :: {feat['bpm']:.0f}\n"
+        f"COLORE SFONDO   :: {hex_bg}\n"
+        f"COLORE ANIM.    :: {hex_fg}\n"
+        f"DENSITA'        :: {densita:.2f}x\n"
+        f"SPESSORE        :: {spessore}\n"
+        f"REATTIVITA'     :: {reattivita:.2f}x\n"
         f"SEED            :: {seed}\n"
-        "------------------------------------------------------------\n"
+        f"{separatore}\n"
         "DSP :: RMS, spectral centroid, onset strength, bande bassi/medi/\n"
         "       alti (STFT), beat tracking — nessun modello AI/neurale.\n"
+        f"{separatore}\n"
+        "Regia e Algoritmo :: Loop507\n"
+        "L'audio e' stato scomposto in frequenze. Il codice ne ha ridisegnato la forma."
+    )
+
+    en = (
+        ":: BASICART // LOOP507 — REPORT ::\n"
+        f"{separatore}\n"
+        f"FILE            :: {nome_file}\n"
+        f"SHAPE           :: {forma}\n"
+        f"RESOLUTION      :: {risoluzione_label}\n"
+        f"DURATION        :: {feat['durata']:.1f}s\n"
+        f"FRAMES          :: {feat['n_frames']} @ {FPS}fps\n"
+        f"SAMPLE RATE     :: {feat['sr']} Hz\n"
+        f"ESTIMATED BPM   :: {feat['bpm']:.0f}\n"
+        f"BACKGROUND COLOR:: {hex_bg}\n"
+        f"ANIMATION COLOR :: {hex_fg}\n"
+        f"DENSITY         :: {densita:.2f}x\n"
+        f"THICKNESS       :: {spessore}\n"
+        f"REACTIVITY      :: {reattivita:.2f}x\n"
+        f"SEED            :: {seed}\n"
+        f"{separatore}\n"
         "DSP :: RMS, spectral centroid, onset strength, low/mid/high\n"
         "       bands (STFT), beat tracking — no AI/neural model.\n"
-        "```"
+        f"{separatore}\n"
+        "Direction & Algorithm :: Loop507\n"
+        "The audio was broken down into frequencies. The code redrew its shape."
     )
+
+    tag_forma = forma.split(" ")[0]   # "Ellisse" o "Loto"
+    hashtags = (
+        f"#Loop507 #BasicArt #{tag_forma} #GenerativeArt #AudioReactive "
+        f"#DSP #PureDSP #BPM{feat['bpm']:.0f}"
+    )
+
+    testo_grezzo = f"{it}\n\n{en}\n\n{hashtags}"
+    testo_markdown = "```\n" + testo_grezzo + "\n```"
+    return testo_markdown, testo_grezzo
 
 
 # ----------------------------------------------------------------------
@@ -555,9 +593,14 @@ def main():
                 nome_file = "basicart_" + os.path.splitext(file_audio.name)[0] + ".mp4"
                 st.session_state["basicart_video"] = video_bytes
                 st.session_state["basicart_filename"] = nome_file
-                st.session_state["basicart_report"] = genera_report(
+                report_md, report_txt = genera_report(
                     nome_file, forma, width, height, risoluzione_label, feat,
                     hex_bg, hex_fg, densita, spessore, reattivita, seed=507,
+                )
+                st.session_state["basicart_report_md"] = report_md
+                st.session_state["basicart_report_txt"] = report_txt
+                st.session_state["basicart_report_filename"] = (
+                    os.path.splitext(nome_file)[0] + "_report.txt"
                 )
 
     if "basicart_video" in st.session_state:
@@ -569,8 +612,14 @@ def main():
             file_name=st.session_state["basicart_filename"],
             mime="video/mp4",
         )
-        if "basicart_report" in st.session_state:
-            st.markdown(st.session_state["basicart_report"])
+        if "basicart_report_md" in st.session_state:
+            st.markdown(st.session_state["basicart_report_md"])
+            st.download_button(
+                "Scarica report :: Download report",
+                data=st.session_state["basicart_report_txt"],
+                file_name=st.session_state["basicart_report_filename"],
+                mime="text/plain",
+            )
 
 
 if __name__ == "__main__":
