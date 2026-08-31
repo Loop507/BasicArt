@@ -121,12 +121,25 @@ def analizza_audio(path_audio, fps, durata_max=MAX_DURATION_S):
     centroid = librosa.feature.spectral_centroid(y=y, sr=sr, hop_length=hop_length)[0]
     onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop_length)
 
-    rms = _norm(_adatta(rms, n_frames))
+    rms_grezzo = _adatta(rms, n_frames)   # RMS non normalizzato: serve per rilevare il
+                                            # silenzio reale, non solo il punto piu' quieto
+                                            # del brano (che con _norm risulterebbe sempre 0)
+    rms = _norm(rms_grezzo)
     centroid = _norm(_adatta(centroid, n_frames))
     onset_env = _norm(_adatta(onset_env, n_frames))
 
     bassi, medi, alti = _bande_spettrali(y, sr, hop_length, n_frames)
     bpm = _stima_bpm(y, sr)
+
+    # gate di presenza: 0 nel silenzio vero, 1 appena il volume supera una soglia
+    # relativa al picco del brano — usato per far scomparire/fermare l'animazione
+    # nei momenti silenziosi invece di limitarsi a rimpicciolirla
+    picco = rms_grezzo.max()
+    if picco > 1e-9:
+        presenza = np.clip(rms_grezzo / (picco * 0.10), 0.0, 1.0)
+    else:
+        presenza = np.zeros(n_frames)
+    presenza = _smussa(presenza, alpha=0.15)
 
     return {
         "rms": _smussa(rms),
@@ -135,6 +148,7 @@ def analizza_audio(path_audio, fps, durata_max=MAX_DURATION_S):
         "bassi": _smussa(bassi),
         "medi": _smussa(medi),
         "alti": _smussa(alti),
+        "presenza": presenza,
         "bpm": bpm,
         "durata": durata,
         "n_frames": n_frames,
@@ -178,6 +192,7 @@ def _parametri_da_audio(feat, i, t_frame, fps, reattivita=1.0):
     medi = feat["medi"][i]
     alti = feat["alti"][i]
     bpm = feat["bpm"]
+    presenza = feat["presenza"][i]   # 0 nel silenzio vero, 1 a volume normale
 
     energia = (0.6 * rms + 0.4 * bassi) * reattivita
 
@@ -191,7 +206,10 @@ def _parametri_da_audio(feat, i, t_frame, fps, reattivita=1.0):
     fase_beat = 2 * np.pi * (bpm / 60.0) * (t_frame / fps)
     respiro = 1.0 + 0.06 * np.sin(fase_beat)
 
-    fattore_ampiezza = np.clip((0.55 + 0.45 * energia) * respiro, 0.25, 2.0)
+    # il gate di presenza azzera quasi del tutto ampiezza e luminosita' nel
+    # silenzio: l'animazione si raccoglie a un punto e sfuma via con la scia,
+    # invece di continuare a disegnare a meta' intensita' come prima
+    fattore_ampiezza = np.clip((0.15 + 0.85 * energia) * respiro, 0.03, 2.0) * presenza
 
     k1 = np.clip(2.0 + (3.0 * centroid + 2.0 * alti) * reattivita, 2.0, 9.0)   # timbro/alti
     k2 = np.clip(2.0 + 3.0 * medi * reattivita, 2.0, 9.0)                       # medi
@@ -202,9 +220,9 @@ def _parametri_da_audio(feat, i, t_frame, fps, reattivita=1.0):
     # armonica e trasforma i petali puliti in un groviglio denso stile Lissajous
     k_loto = np.clip(2.6 + (1.2 * centroid + 0.8 * alti + 0.6 * medi) * reattivita, 2.2, 5.2)
 
-    intensita = np.clip(0.88 + 0.12 * onset, 0.5, 1.0)   # baseline alta: il colore scelto
-                                                            # resta vivo, l'onset aggiunge
-                                                            # solo un lieve guizzo extra
+    intensita = np.clip(0.88 + 0.12 * onset, 0.5, 1.0) * presenza   # baseline alta a volume
+                                                                       # normale, ma azzerata
+                                                                       # dal gate nel silenzio
     return fattore_ampiezza, k1, k2, k_loto, onset, intensita, velocita
 
 
