@@ -40,7 +40,7 @@ RISOLUZIONI = {
     "1:1   (720x720)": (720, 720),
 }
 
-FORME = ["Deriva (cartesiana)", "Fioritura (polare)"]
+FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)"]
 
 st.set_page_config(page_title="BasicArt // Loop507", layout="centered")
 
@@ -290,9 +290,61 @@ def disegna_loto(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_fg
     return canvas
 
 
+def disegna_pulviscolo(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_fg, t1_arr, fps,
+                        reattivita=1.0, spessore=1):
+    """Struttura radicalmente diversa dalle altre due: una spirale di
+    polvere che si espande dal centro verso il bordo (non ellissi chiuse
+    ne' petali), pilotata dall'audio. Il numero di giri della spirale
+    dipende dal timbro/alti del brano, la rotazione complessiva dal BPM.
+    Aggiunge un tocco mio non presente in alcun riferimento: un lieve
+    rumore stocastico radiale proporzionale alle alte frequenze, che da'
+    una texture "polverosa" — la grana si addensa quando il brano e'
+    brillante/ricco di alti, si dirada quando e' piu' cupo."""
+    fattore, k1, _k2, _k_loto, onset, intensita, velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    alti = feat["alti"][i] * reattivita
+
+    n = len(t1_arr)
+    frac = t1_arr / n   # 0..1 lungo il braccio della spirale, dal centro al bordo
+
+    # numero di giri della spirale: pilotato da timbro/alti (k1 gia' li combina)
+    giri = 1.5 + 3.0 * np.clip((k1 - 2.0) / 7.0, 0.0, 1.0)
+    theta = frac * giri * 2 * np.pi
+
+    rotazione = t_frame * 0.012 * velocita + onset * 0.5   # l'intera spirale ruota nel tempo
+    raggio_punto = frac * fattore
+
+    # granulosita' stocastica radiale legata agli alti: tocco creativo mio,
+    # non presente nel riferimento BASIC originale
+    grana = 0.05 * alti
+    if grana > 0.002:
+        raggio_punto = raggio_punto + np.random.uniform(-grana, grana, size=raggio_punto.shape)
+
+    xs = (cx + raggio_x * raggio_punto * np.cos(theta + rotazione)).astype(np.int32)
+    ys = (cy + raggio_y * raggio_punto * np.sin(theta + rotazione)).astype(np.int32)
+
+    h, w = canvas.shape[:2]
+    dentro = (xs >= 0) & (xs < w) & (ys >= 0) & (ys < h)
+    xs, ys = xs[dentro], ys[dentro]
+
+    colore = np.array([min(int(c * intensita), 255) for c in colore_fg], dtype=np.uint8)
+    if spessore <= 1:
+        canvas[ys, xs] = colore
+    else:
+        mask = np.zeros((h, w), dtype=np.uint8)
+        mask[ys, xs] = 255
+        kernel = np.ones((spessore, spessore), np.uint8)
+        mask = cv2.dilate(mask, kernel)
+        canvas[mask > 0] = colore
+
+    return canvas
+
+
 MOTORI = {
-    "Ellisse (cartesiana)": {"funzione": disegna_ellisse, "n_step": 900, "fade": 0.90},
-    "Loto (polare)": {"funzione": disegna_loto, "n_step": 3300, "fade": 0.80},
+    "Deriva (cartesiana)": {"funzione": disegna_ellisse, "n_step": 900, "fade": 0.90},
+    "Fioritura (polare)": {"funzione": disegna_loto, "n_step": 3300, "fade": 0.80},
+    "Pulviscolo (cartesiana)": {"funzione": disegna_pulviscolo, "n_step": 2500, "fade": 0.88},
 }
 
 
