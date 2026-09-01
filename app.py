@@ -411,15 +411,16 @@ def disegna_graffio(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore
 def disegna_sismografo(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_fg, t1_arr, fps,
                         reattivita=1.0, spessore=2, stato=None):
     """Storico scorrevole dell'energia del brano disegnato come barre
-    verticali dritte che scorrono da destra a sinistra nel tempo — come
-    un sismografo o un equalizzatore a barre. Reinterpretazione di un
-    riferimento BASIC che disegnava dense linee dritte; qui l'altezza di
-    ogni barra rappresenta l'energia del brano nel momento in cui e'
-    entrata in scena (a destra), poi scorre via. La velocita' di
-    scorrimento e' legata al BPM, una leggera texture random sulle barre
-    e' pilotata dagli alti. Monocromatico (il riferimento usava colori
-    casuali per ogni linea); beneficia del gate di silenzio gia' presente
-    in 'fattore': nel silenzio entrano barre quasi piatte."""
+    verticali dritte che scorrono da destra a sinistra nel tempo — un vero
+    sismografo: ogni barra parte dalla linea centrale e si estende verso
+    l'alto O il basso (direzione casuale assegnata quando la barra entra
+    in scena, non un semplice specchio simmetrico), creando un tracciato
+    irregolare che oscilla sopra e sotto invece di pendere solo verso il
+    basso. L'altezza rappresenta l'energia del brano nel momento in cui la
+    barra e' apparsa. Velocita' di scorrimento legata al BPM, texture
+    random sulle barre pilotata dagli alti. Monocromatico (il riferimento
+    usava colori casuali per ogni linea); beneficia del gate di silenzio
+    gia' presente in 'fattore': nel silenzio entrano barre quasi piatte."""
     fattore, _k1, _k2, _k_loto, _onset, intensita, velocita = _parametri_da_audio(
         feat, i, t_frame, fps, reattivita
     )
@@ -432,22 +433,31 @@ def disegna_sismografo(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, col
         stato = {}
     if "buffer" not in stato or len(stato["buffer"]) != n_colonne:
         stato["buffer"] = np.zeros(n_colonne)
+        stato["direzioni"] = np.random.choice([-1.0, 1.0], size=n_colonne)
 
     spostamento = min(n_colonne, max(1, int(round(1 + 3 * velocita))))
 
     buffer = np.roll(stato["buffer"], -spostamento)
+    direzioni = np.roll(stato["direzioni"], -spostamento)
+
     grana = np.random.uniform(0.85, 1.15, size=spostamento) * (0.85 + 0.3 * alti)
     buffer[-spostamento:] = np.clip(fattore, 0.0, 1.8) * grana
+    # ogni nuova barra sceglie a caso se salire o scendere dalla linea
+    # centrale — non un'alternanza fissa, per un tracciato piu' organico
+    direzioni[-spostamento:] = np.random.choice([-1.0, 1.0], size=spostamento)
+
     stato["buffer"] = buffer
+    stato["direzioni"] = direzioni
 
     spacing = w / n_colonne
     colore = tuple(min(int(c * intensita), 255) for c in colore_fg)
-    altezze = np.clip(buffer, 0.0, 2.0) * (h * 0.48)
+    altezze = np.clip(buffer, 0.0, 2.0) * (h * 0.48) * direzioni
+    cy_int = h // 2
 
     for k in range(n_colonne):
         x = int(k * spacing)
-        y2 = int(altezze[k])
-        cv2.line(canvas, (x, 0), (x, y2), colore, spessore, lineType=cv2.LINE_AA)
+        y2 = cy_int + int(altezze[k])
+        cv2.line(canvas, (x, cy_int), (x, y2), colore, spessore, lineType=cv2.LINE_AA)
 
     return canvas
 
