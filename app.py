@@ -40,7 +40,7 @@ RISOLUZIONI = {
     "1:1   (720x720)": (720, 720),
 }
 
-FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)"]
+FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)"]
 
 st.set_page_config(page_title="BasicArt // Loop507", layout="centered")
 
@@ -452,12 +452,73 @@ def disegna_sismografo(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, col
     return canvas
 
 
+def disegna_julia(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_fg, t1_arr, fps,
+                   reattivita=1.0, spessore=2, stato=None):
+    """Insieme di Julia (frattale nel piano complesso: z=z^2+c iterato per
+    ogni punto), animato facendo ruotare la costante c nel tempo in base
+    all'audio — piccole variazioni di c producono forme del frattale
+    drasticamente diverse, quindi un brano potente fa "vibrare" la forma
+    in modo brusco. Reinterpretazione libera: l'algoritmo di Julia e'
+    matematica standard, non copiato dal riferimento BASIC (che disegnava
+    il frattale in modo statico). Calcolato a risoluzione ridotta e
+    ingrandito con interpolazione nearest per un effetto deliberatamente
+    "a blocchi", coerente con l'estetica BASIC primitivo, e per restare
+    performante (l'alternativa, calcolo pixel-per-pixel a piena risoluzione
+    per ogni frame, sarebbe troppo lenta per un video)."""
+    fattore, k1, _k2, _k_loto, onset, intensita, velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    alti = feat["alti"][i] * reattivita
+
+    h, w = canvas.shape[:2]
+
+    # risoluzione di calcolo ridotta (la densita' la scala tramite n_step)
+    ris_w = max(60, int(np.sqrt(len(t1_arr)) * 8))
+    ris_h = max(40, int(ris_w * h / w))
+
+    # la costante c ruota nel tempo: raggio pilotato da energia/bassi (fattore
+    # incorpora gia' il gate di silenzio), velocita' angolare dal BPM, piccoli
+    # scatti sugli attacchi (onset)
+    raggio_c = 0.55 + 0.25 * np.clip(fattore, 0.0, 1.5)
+    angolo_c = t_frame * 0.02 * velocita + onset * 0.6 + k1 * 0.05
+    c = complex(raggio_c * np.cos(angolo_c), raggio_c * np.sin(angolo_c))
+
+    xs_lin = np.linspace(-1.5, 1.5, ris_w)
+    ys_lin = np.linspace(-1.5 * ris_h / ris_w, 1.5 * ris_h / ris_w, ris_h)
+    X, Y = np.meshgrid(xs_lin, ys_lin)
+    Z = X + 1j * Y
+
+    n_iter = 28
+    escape = np.zeros((ris_h, ris_w), dtype=np.float32)
+    attivo = np.ones((ris_h, ris_w), dtype=bool)
+    for it in range(n_iter):
+        Z[attivo] = Z[attivo] ** 2 + c
+        scappati_ora = attivo & (np.abs(Z) > 2.0)
+        escape[scappati_ora] = it
+        attivo &= ~scappati_ora
+        if not attivo.any():
+            break
+    # i punti che non scappano mai (interno dell'insieme) restano a 0 (sfondo):
+    # solo il bordo/l'esterno (dove l'escape time varia) produce la texture
+
+    valore = np.clip((escape / n_iter) * (0.6 + 0.4 * alti), 0.0, 1.0)
+    campo_u8 = (valore * 255).astype(np.uint8)
+    campo_grande = cv2.resize(campo_u8, (w, h), interpolation=cv2.INTER_NEAREST)
+
+    colore_arr = np.array(colore_fg, dtype=np.float32)
+    campo_col = (campo_grande[..., None].astype(np.float32) / 255.0) * colore_arr * intensita
+    canvas[:] = np.clip(campo_col, 0, 255).astype(np.uint8)
+
+    return canvas
+
+
 MOTORI = {
     "Deriva (cartesiana)": {"funzione": disegna_ellisse, "n_step": 900, "fade": 0.90},
     "Fioritura (polare)": {"funzione": disegna_loto, "n_step": 3300, "fade": 0.80},
     "Pulviscolo (cartesiana)": {"funzione": disegna_pulviscolo, "n_step": 2500, "fade": 0.88},
     "Graffio (random walk)": {"funzione": disegna_graffio, "n_step": 60, "fade": 0.85},
     "Sismografo (verticali)": {"funzione": disegna_sismografo, "n_step": 160, "fade": 0.0},
+    "Frontiera (piano complesso)": {"funzione": disegna_julia, "n_step": 900, "fade": 0.0},
 }
 
 
