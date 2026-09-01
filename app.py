@@ -40,7 +40,7 @@ RISOLUZIONI = {
     "1:1   (720x720)": (720, 720),
 }
 
-FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)"]
+FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)"]
 
 st.set_page_config(page_title="BasicArt // Loop507", layout="centered")
 
@@ -227,7 +227,7 @@ def _parametri_da_audio(feat, i, t_frame, fps, reattivita=1.0):
 
 
 def disegna_ellisse(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_fg, t1_arr, fps,
-                     reattivita=1.0, spessore=2):
+                     reattivita=1.0, spessore=2, stato=None):
     """Pattern cartesiano: x=f(t2), y=f(t1). Scala anisotropica (raggio_x/
     raggio_y separati) per riempire il fotogramma invece di restare confinato
     al centro — reinterpretazione mia rispetto al riferimento (che usava un
@@ -258,7 +258,7 @@ def disegna_ellisse(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore
 
 
 def disegna_loto(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_fg, t1_arr, fps,
-                  reattivita=1.0, spessore=2):
+                  reattivita=1.0, spessore=2, stato=None):
     """Pattern polare: r=f(t2), a=f(t1), x=r*cos(a), y=r*sin(a).
     r e a condividono la stessa frequenza secondaria k (come nel BASIC
     originale) per mantenere la simmetria a petali. A differenza
@@ -309,7 +309,7 @@ def disegna_loto(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_fg
 
 
 def disegna_pulviscolo(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_fg, t1_arr, fps,
-                        reattivita=1.0, spessore=1):
+                        reattivita=1.0, spessore=1, stato=None):
     """Struttura radicalmente diversa dalle altre due: una spirale di
     polvere che si espande dal centro verso il bordo (non ellissi chiuse
     ne' petali), pilotata dall'audio. Il numero di giri della spirale
@@ -359,10 +359,60 @@ def disegna_pulviscolo(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, col
     return canvas
 
 
+def disegna_graffio(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_fg, t1_arr, fps,
+                     reattivita=1.0, spessore=2, stato=None):
+    """Random walk di segmenti brevi che vaga per il fotogramma con
+    teletrasporto ai bordi (wrap-around) — ispirato a un terzo riferimento
+    BASIC che usa RANDOM invece di funzioni trigonometriche. A differenza
+    del riferimento (colore casuale per ogni linea), qui il colore resta
+    monocromatico e coerente col resto dell'app. Il passo del vagabondaggio
+    e' pilotato da energia/bassi (fattore_ampiezza, che incorpora gia' il
+    gate di silenzio: nei momenti quieti il tratto quasi si ferma), la
+    lunghezza dei segmenti dagli alti. Usa np.cumsum per vettorizzare la
+    sequenza di passi casuali invece di un loop Python punto-per-punto."""
+    fattore, _k1, _k2, _k_loto, _onset, intensita, _velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    alti = feat["alti"][i] * reattivita
+
+    h, w = canvas.shape[:2]
+    if stato is None or "x" not in stato:
+        if stato is None:
+            stato = {}
+        stato["x"] = w / 2.0
+        stato["y"] = h / 2.0
+
+    n_step = len(t1_arr)   # la densita' (slider) regola quanti segmenti per frame
+
+    passo_max = 2.0 + 14.0 * fattore       # energia/bassi + gate silenzio gia' inclusi
+    lunghezza_max = 2.0 + 30.0 * alti      # timbro/alti -> segmenti piu' o meno lunghi
+
+    passi_x = np.random.uniform(-passo_max, passo_max, size=n_step)
+    passi_y = np.random.uniform(-passo_max, passo_max, size=n_step)
+
+    xs = np.mod(stato["x"] + np.cumsum(passi_x), w)
+    ys = np.mod(stato["y"] + np.cumsum(passi_y), h)
+
+    dx = np.random.uniform(-lunghezza_max, lunghezza_max, size=n_step)
+    dy = np.random.uniform(-lunghezza_max, lunghezza_max, size=n_step)
+
+    colore = tuple(min(int(c * intensita), 255) for c in colore_fg)
+
+    for k in range(n_step):
+        x1, y1 = int(xs[k]), int(ys[k])
+        x2, y2 = int(xs[k] + dx[k]), int(ys[k] + dy[k])
+        cv2.line(canvas, (x1, y1), (x2, y2), colore, spessore, lineType=cv2.LINE_AA)
+
+    stato["x"], stato["y"] = float(xs[-1]), float(ys[-1])
+
+    return canvas
+
+
 MOTORI = {
     "Deriva (cartesiana)": {"funzione": disegna_ellisse, "n_step": 900, "fade": 0.90},
     "Fioritura (polare)": {"funzione": disegna_loto, "n_step": 3300, "fade": 0.80},
     "Pulviscolo (cartesiana)": {"funzione": disegna_pulviscolo, "n_step": 2500, "fade": 0.88},
+    "Graffio (random walk)": {"funzione": disegna_graffio, "n_step": 60, "fade": 0.85},
 }
 
 
@@ -389,6 +439,7 @@ def genera_video(feat, path_out, width, height, colore_bg, colore_fg, forma, fps
 
     n_frames = feat["n_frames"]
     progress = st.progress(0, text="RENDER :: generazione frame in corso...")
+    stato = {}   # stato persistente (usato solo da Graffio, ignorato dalle altre forme)
 
     for i in range(n_frames):
         # fade verso il nero (scia stile fosfori)
@@ -399,7 +450,7 @@ def genera_video(feat, path_out, width, height, colore_bg, colore_fg, forma, fps
             canvas_u8, t_frame=i, feat=feat, i=i,
             cx=cx, cy=cy, raggio_x=raggio_x, raggio_y=raggio_y,
             colore_fg=colore_fg, t1_arr=t1_arr, fps=fps,
-            reattivita=reattivita, spessore=spessore,
+            reattivita=reattivita, spessore=spessore, stato=stato,
         )
         canvas = canvas_u8.astype(np.float32)
 
@@ -444,6 +495,7 @@ def genera_anteprima(feat, width, height, colore_bg, colore_fg, forma, densita, 
 
     canvas = np.zeros((height, width, 3), dtype=np.float32)
     bg = np.array(colore_bg, dtype=np.float32)
+    stato = {}   # stato persistente (usato solo da Graffio)
 
     for i in range(i_inizio, i_picco + 1):
         canvas = canvas * fade_alpha + bg * (1 - fade_alpha)
@@ -452,7 +504,7 @@ def genera_anteprima(feat, width, height, colore_bg, colore_fg, forma, densita, 
             canvas_u8, t_frame=i, feat=feat, i=i,
             cx=cx, cy=cy, raggio_x=raggio_x, raggio_y=raggio_y,
             colore_fg=colore_fg, t1_arr=t1_arr, fps=fps,
-            reattivita=reattivita, spessore=spessore,
+            reattivita=reattivita, spessore=spessore, stato=stato,
         )
         canvas = canvas_u8.astype(np.float32)
 
