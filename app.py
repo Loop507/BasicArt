@@ -91,6 +91,31 @@ def _bande_spettrali(y, sr, hop_length, n_frames):
     return _norm(bassi), _norm(medi), _norm(alti)
 
 
+def _spettro_a_barre(y, sr, hop_length, n_frames, n_barre=64):
+    """Spettro a barre nel tempo: n_barre bande di frequenza log-spaziate
+    (come un vero equalizzatore, piu' risoluzione sui bassi), energia
+    normalizzata banda per banda sul proprio massimo nel brano. Usato per
+    un display "spectrum analyzer" con barre ferme che pulsano in altezza,
+    non per uno storico che scorre."""
+    S = np.abs(librosa.stft(y, hop_length=hop_length))
+    freqs = librosa.fft_frequencies(sr=sr, n_fft=(S.shape[0] - 1) * 2)
+
+    f_min, f_max = 40.0, min(sr / 2.0, 12000.0)
+    bordi = np.geomspace(f_min, f_max, n_barre + 1)
+
+    spettro = np.zeros((n_frames, n_barre))
+    for b in range(n_barre):
+        mask = (freqs >= bordi[b]) & (freqs < bordi[b + 1])
+        if mask.any():
+            colonna = S[mask].mean(axis=0)
+        else:
+            idx = int(np.argmin(np.abs(freqs - bordi[b])))
+            colonna = S[idx]
+        spettro[:, b] = _smussa(_norm(_adatta(colonna, n_frames)), alpha=0.30)
+
+    return spettro
+
+
 def _stima_bpm(y, sr):
     """Stima il tempo (BPM) del brano via beat tracking DSP (no AI).
     Il valore pilota la velocita' di rotazione/pulsazione del pattern:
@@ -129,6 +154,7 @@ def analizza_audio(path_audio, fps, durata_max=MAX_DURATION_S):
     onset_env = _norm(_adatta(onset_env, n_frames))
 
     bassi, medi, alti = _bande_spettrali(y, sr, hop_length, n_frames)
+    spettro = _spettro_a_barre(y, sr, hop_length, n_frames)
     bpm = _stima_bpm(y, sr)
 
     # gate di presenza: 0 nel silenzio vero, 1 appena il volume supera una soglia
@@ -148,6 +174,7 @@ def analizza_audio(path_audio, fps, durata_max=MAX_DURATION_S):
         "bassi": _smussa(bassi),
         "medi": _smussa(medi),
         "alti": _smussa(alti),
+        "spettro": spettro,
         "presenza": presenza,
         "bpm": bpm,
         "durata": durata,
@@ -410,54 +437,35 @@ def disegna_graffio(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore
 
 def disegna_sismografo(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_fg, t1_arr, fps,
                         reattivita=1.0, spessore=2, stato=None):
-    """Storico scorrevole dell'energia del brano disegnato come barre
-    verticali dritte che scorrono da destra a sinistra nel tempo — un vero
-    sismografo: ogni barra parte dalla linea centrale e si estende verso
-    l'alto O il basso (direzione casuale assegnata quando la barra entra
-    in scena, non un semplice specchio simmetrico), creando un tracciato
-    irregolare che oscilla sopra e sotto invece di pendere solo verso il
-    basso. L'altezza rappresenta l'energia del brano nel momento in cui la
-    barra e' apparsa. Velocita' di scorrimento legata al BPM, texture
-    random sulle barre pilotata dagli alti. Monocromatico (il riferimento
-    usava colori casuali per ogni linea); beneficia del gate di silenzio
-    gia' presente in 'fattore': nel silenzio entrano barre quasi piatte."""
-    fattore, _k1, _k2, _k_loto, _onset, intensita, velocita = _parametri_da_audio(
+    """Spectrum analyzer vero: barre verticali FERME in posizione (non
+    scorrono lateralmente) — ogni barra rappresenta una banda di frequenza
+    log-spaziata (come un equalizzatore reale) e la sua altezza pulsa su e
+    giu' nel tempo seguendo l'energia di quella banda. Le barre si estendono
+    simmetricamente sopra e sotto la linea centrale. Il numero di barre e'
+    fisso (deciso in analisi, non dallo slider densita', perche' lo spettro
+    e' precalcolato una sola volta su tutto il brano). Monocromatico;
+    beneficia del gate di silenzio (spettro azzerato nel silenzio vero)."""
+    _fattore, _k1, _k2, _k_loto, _onset, intensita, _velocita = _parametri_da_audio(
         feat, i, t_frame, fps, reattivita
     )
-    alti = feat["alti"][i] * reattivita
+    presenza = feat["presenza"][i]
 
     h, w = canvas.shape[:2]
-    n_colonne = len(t1_arr)
+    spettro = np.clip(feat["spettro"][i] * reattivita * presenza, 0.0, 1.6)
+    n_barre = len(spettro)
 
-    if stato is None:
-        stato = {}
-    if "buffer" not in stato or len(stato["buffer"]) != n_colonne:
-        stato["buffer"] = np.zeros(n_colonne)
-        stato["direzioni"] = np.random.choice([-1.0, 1.0], size=n_colonne)
-
-    spostamento = min(n_colonne, max(1, int(round(1 + 3 * velocita))))
-
-    buffer = np.roll(stato["buffer"], -spostamento)
-    direzioni = np.roll(stato["direzioni"], -spostamento)
-
-    grana = np.random.uniform(0.85, 1.15, size=spostamento) * (0.85 + 0.3 * alti)
-    buffer[-spostamento:] = np.clip(fattore, 0.0, 1.8) * grana
-    # ogni nuova barra sceglie a caso se salire o scendere dalla linea
-    # centrale — non un'alternanza fissa, per un tracciato piu' organico
-    direzioni[-spostamento:] = np.random.choice([-1.0, 1.0], size=spostamento)
-
-    stato["buffer"] = buffer
-    stato["direzioni"] = direzioni
-
-    spacing = w / n_colonne
+    spacing = w / n_barre
     colore = tuple(min(int(c * intensita), 255) for c in colore_fg)
-    altezze = np.clip(buffer, 0.0, 2.0) * (h * 0.48) * direzioni
     cy_int = h // 2
+    altezze = (spettro * (h * 0.46)).astype(np.int32)
 
-    for k in range(n_colonne):
-        x = int(k * spacing)
-        y2 = cy_int + int(altezze[k])
-        cv2.line(canvas, (x, cy_int), (x, y2), colore, spessore, lineType=cv2.LINE_AA)
+    for k in range(n_barre):
+        x = int(k * spacing + spacing / 2)
+        y_alto = cy_int - altezze[k]
+        y_basso = cy_int + altezze[k]
+        cv2.line(canvas, (x, y_alto), (x, y_basso), colore, spessore, lineType=cv2.LINE_AA)
+
+    return canvas
 
     return canvas
 
