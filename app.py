@@ -40,7 +40,7 @@ RISOLUZIONI = {
     "1:1   (720x720)": (720, 720),
 }
 
-FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)"]
+FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)"]
 
 st.set_page_config(page_title="BasicArt // Loop507", layout="centered")
 
@@ -408,11 +408,56 @@ def disegna_graffio(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore
     return canvas
 
 
+def disegna_sismografo(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_fg, t1_arr, fps,
+                        reattivita=1.0, spessore=2, stato=None):
+    """Storico scorrevole dell'energia del brano disegnato come barre
+    verticali dritte che scorrono da destra a sinistra nel tempo — come
+    un sismografo o un equalizzatore a barre. Reinterpretazione di un
+    riferimento BASIC che disegnava dense linee dritte; qui l'altezza di
+    ogni barra rappresenta l'energia del brano nel momento in cui e'
+    entrata in scena (a destra), poi scorre via. La velocita' di
+    scorrimento e' legata al BPM, una leggera texture random sulle barre
+    e' pilotata dagli alti. Monocromatico (il riferimento usava colori
+    casuali per ogni linea); beneficia del gate di silenzio gia' presente
+    in 'fattore': nel silenzio entrano barre quasi piatte."""
+    fattore, _k1, _k2, _k_loto, _onset, intensita, velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    alti = feat["alti"][i] * reattivita
+
+    h, w = canvas.shape[:2]
+    n_colonne = len(t1_arr)
+
+    if stato is None:
+        stato = {}
+    if "buffer" not in stato or len(stato["buffer"]) != n_colonne:
+        stato["buffer"] = np.zeros(n_colonne)
+
+    spostamento = min(n_colonne, max(1, int(round(1 + 3 * velocita))))
+
+    buffer = np.roll(stato["buffer"], -spostamento)
+    grana = np.random.uniform(0.85, 1.15, size=spostamento) * (0.85 + 0.3 * alti)
+    buffer[-spostamento:] = np.clip(fattore, 0.0, 1.8) * grana
+    stato["buffer"] = buffer
+
+    spacing = w / n_colonne
+    colore = tuple(min(int(c * intensita), 255) for c in colore_fg)
+    altezze = np.clip(buffer, 0.0, 2.0) * (h * 0.48)
+
+    for k in range(n_colonne):
+        x = int(k * spacing)
+        y2 = int(altezze[k])
+        cv2.line(canvas, (x, 0), (x, y2), colore, spessore, lineType=cv2.LINE_AA)
+
+    return canvas
+
+
 MOTORI = {
     "Deriva (cartesiana)": {"funzione": disegna_ellisse, "n_step": 900, "fade": 0.90},
     "Fioritura (polare)": {"funzione": disegna_loto, "n_step": 3300, "fade": 0.80},
     "Pulviscolo (cartesiana)": {"funzione": disegna_pulviscolo, "n_step": 2500, "fade": 0.88},
     "Graffio (random walk)": {"funzione": disegna_graffio, "n_step": 60, "fade": 0.85},
+    "Sismografo (verticali)": {"funzione": disegna_sismografo, "n_step": 160, "fade": 0.0},
 }
 
 
