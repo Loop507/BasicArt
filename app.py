@@ -96,7 +96,9 @@ def _spettro_a_barre(y, sr, hop_length, n_frames, n_barre=140):
     (come un vero equalizzatore, piu' risoluzione sui bassi), energia
     normalizzata banda per banda sul proprio massimo nel brano. Usato per
     un display "spectrum analyzer" con barre ferme che pulsano in altezza,
-    non per uno storico che scorre."""
+    non per uno storico che scorre. Restituisce anche la classificazione
+    di ogni barra (0=bassi <250Hz, 1=medi 250-2000Hz, 2=alti >=2000Hz) in
+    base alla sua frequenza centrale, per poterla colorare di conseguenza."""
     S = np.abs(librosa.stft(y, hop_length=hop_length))
     freqs = librosa.fft_frequencies(sr=sr, n_fft=(S.shape[0] - 1) * 2)
 
@@ -104,6 +106,7 @@ def _spettro_a_barre(y, sr, hop_length, n_frames, n_barre=140):
     bordi = np.geomspace(f_min, f_max, n_barre + 1)
 
     spettro = np.zeros((n_frames, n_barre))
+    classe_banda = np.zeros(n_barre, dtype=np.int32)
     for b in range(n_barre):
         mask = (freqs >= bordi[b]) & (freqs < bordi[b + 1])
         if mask.any():
@@ -113,7 +116,29 @@ def _spettro_a_barre(y, sr, hop_length, n_frames, n_barre=140):
             colonna = S[idx]
         spettro[:, b] = _smussa(_norm(_adatta(colonna, n_frames)), alpha=0.30)
 
-    return spettro
+        centro = np.sqrt(bordi[b] * bordi[b + 1])
+        if centro < 250:
+            classe_banda[b] = 0
+        elif centro < 2000:
+            classe_banda[b] = 1
+        else:
+            classe_banda[b] = 2
+
+    return spettro, classe_banda
+
+
+def _colore_miscelato(feat, i, colore_bassi, colore_medi, colore_alti):
+    """Miscela i tre colori (bassi/medi/alti) pesandoli in base all'energia
+    relativa di ciascuna banda nel brano in questo istante — usato dalle
+    forme che non hanno gia' una struttura a bande (Deriva, Fioritura,
+    Pulviscolo, Graffio, Frontiera), cosi' il colore stesso segue il
+    timbro del brano momento per momento."""
+    bassi = feat["bassi"][i]
+    medi = feat["medi"][i]
+    alti = feat["alti"][i]
+    tot = bassi + medi + alti + 1e-9
+    wb, wm, wa = bassi / tot, medi / tot, alti / tot
+    return tuple(wb * colore_bassi[c] + wm * colore_medi[c] + wa * colore_alti[c] for c in range(3))
 
 
 def _stima_bpm(y, sr):
@@ -154,7 +179,7 @@ def analizza_audio(path_audio, fps, durata_max=MAX_DURATION_S):
     onset_env = _norm(_adatta(onset_env, n_frames))
 
     bassi, medi, alti = _bande_spettrali(y, sr, hop_length, n_frames)
-    spettro = _spettro_a_barre(y, sr, hop_length, n_frames)
+    spettro, spettro_classe = _spettro_a_barre(y, sr, hop_length, n_frames)
     bpm = _stima_bpm(y, sr)
 
     # gate di presenza: 0 nel silenzio vero, 1 appena il volume supera una soglia
@@ -175,6 +200,7 @@ def analizza_audio(path_audio, fps, durata_max=MAX_DURATION_S):
         "medi": _smussa(medi),
         "alti": _smussa(alti),
         "spettro": spettro,
+        "spettro_classe": spettro_classe,
         "presenza": presenza,
         "bpm": bpm,
         "durata": durata,
@@ -253,8 +279,8 @@ def _parametri_da_audio(feat, i, t_frame, fps, reattivita=1.0):
     return fattore_ampiezza, k1, k2, k_loto, onset, intensita, velocita
 
 
-def disegna_ellisse(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_fg, t1_arr, fps,
-                     reattivita=1.0, spessore=2, stato=None):
+def disegna_ellisse(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                     colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None):
     """Pattern cartesiano: x=f(t2), y=f(t1). Scala anisotropica (raggio_x/
     raggio_y separati) per riempire il fotogramma invece di restare confinato
     al centro — reinterpretazione mia rispetto al riferimento (che usava un
@@ -278,14 +304,15 @@ def disegna_ellisse(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore
     xs = (cx + raggio_x * fx).astype(np.int32)
     ys = (cy + raggio_y * fy).astype(np.int32)
 
-    colore = tuple(min(int(c * intensita), 255) for c in colore_fg)
+    colore_base = _colore_miscelato(feat, i, colore_bassi, colore_medi, colore_alti)
+    colore = tuple(min(int(c * intensita), 255) for c in colore_base)
     pts = np.stack([xs, ys], axis=1).reshape(-1, 1, 2)
     cv2.polylines(canvas, [pts], isClosed=False, color=colore, thickness=spessore, lineType=cv2.LINE_AA)
     return canvas
 
 
-def disegna_loto(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_fg, t1_arr, fps,
-                  reattivita=1.0, spessore=2, stato=None):
+def disegna_loto(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                  colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None):
     """Pattern polare: r=f(t2), a=f(t1), x=r*cos(a), y=r*sin(a).
     r e a condividono la stessa frequenza secondaria k (come nel BASIC
     originale) per mantenere la simmetria a petali. A differenza
@@ -319,7 +346,7 @@ def disegna_loto(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_fg
     dentro = (xs >= 0) & (xs < w) & (ys >= 0) & (ys < h)
     xs, ys = xs[dentro], ys[dentro]
 
-    colore = np.array([min(int(c * intensita), 255) for c in colore_fg], dtype=np.uint8)
+    colore = np.array([min(int(c * intensita), 255) for c in _colore_miscelato(feat, i, colore_bassi, colore_medi, colore_alti)], dtype=np.uint8)
 
     if spessore <= 1:
         canvas[ys, xs] = colore   # PLOT: punti isolati, non connessi
@@ -335,8 +362,8 @@ def disegna_loto(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_fg
     return canvas
 
 
-def disegna_pulviscolo(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_fg, t1_arr, fps,
-                        reattivita=1.0, spessore=1, stato=None):
+def disegna_pulviscolo(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                        colore_alti, t1_arr, fps, reattivita=1.0, spessore=1, stato=None):
     """Struttura radicalmente diversa dalle altre due: una spirale di
     polvere che si espande dal centro verso il bordo (non ellissi chiuse
     ne' petali), pilotata dall'audio. Il numero di giri della spirale
@@ -373,7 +400,7 @@ def disegna_pulviscolo(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, col
     dentro = (xs >= 0) & (xs < w) & (ys >= 0) & (ys < h)
     xs, ys = xs[dentro], ys[dentro]
 
-    colore = np.array([min(int(c * intensita), 255) for c in colore_fg], dtype=np.uint8)
+    colore = np.array([min(int(c * intensita), 255) for c in _colore_miscelato(feat, i, colore_bassi, colore_medi, colore_alti)], dtype=np.uint8)
     if spessore <= 1:
         canvas[ys, xs] = colore
     else:
@@ -386,8 +413,8 @@ def disegna_pulviscolo(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, col
     return canvas
 
 
-def disegna_graffio(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_fg, t1_arr, fps,
-                     reattivita=1.0, spessore=2, stato=None):
+def disegna_graffio(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                     colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None):
     """Random walk di segmenti brevi che vaga per il fotogramma con
     teletrasporto ai bordi (wrap-around) — ispirato a un terzo riferimento
     BASIC che usa RANDOM invece di funzioni trigonometriche. A differenza
@@ -423,7 +450,7 @@ def disegna_graffio(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore
     dx = np.random.uniform(-lunghezza_max, lunghezza_max, size=n_step)
     dy = np.random.uniform(-lunghezza_max, lunghezza_max, size=n_step)
 
-    colore = tuple(min(int(c * intensita), 255) for c in colore_fg)
+    colore = tuple(min(int(c * intensita), 255) for c in _colore_miscelato(feat, i, colore_bassi, colore_medi, colore_alti))
 
     for k in range(n_step):
         x1, y1 = int(xs[k]), int(ys[k])
@@ -435,20 +462,19 @@ def disegna_graffio(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore
     return canvas
 
 
-def disegna_sismografo(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_fg, t1_arr, fps,
-                        reattivita=1.0, spessore=2, stato=None):
+def disegna_sismografo(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                        colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None):
     """Spectrum analyzer: barre verticali FERME in posizione orizzontale
     (non scorrono lateralmente) — ogni barra rappresenta una banda di
     frequenza log-spaziata (come un equalizzatore reale, precalcolata una
     sola volta su tutto il brano) e la sua altezza pulsa su e giu' nel
     tempo seguendo l'energia di quella banda. Estensione simmetrica sopra/
-    sotto la linea centrale. Tocchi artistici (per non ridurlo a un
-    equalizzatore piatto): luminosita' di ogni barra proporzionale alla
-    sua altezza (le piu' energiche brillano di piu'), spessore che varia
-    leggermente barra per barra. Monocromatico; beneficia del gate di
-    silenzio (spettro azzerato nel silenzio vero). Il numero di barre e'
-    fisso (non controllato dallo slider densita', perche' lo spettro e'
-    precalcolato una sola volta in analisi)."""
+    sotto la linea centrale. Ogni barra usa il colore (bassi/medi/alti)
+    corrispondente alla sua frequenza — non un'unica tinta piatta.
+    Luminosita' e spessore variano leggermente barra per barra. Beneficia
+    del gate di silenzio (spettro azzerato nel silenzio vero). Il numero
+    di barre e' fisso (non controllato dallo slider densita', perche' lo
+    spettro e' precalcolato una sola volta in analisi)."""
     _fattore, _k1, _k2, _k_loto, _onset, intensita, _velocita = _parametri_da_audio(
         feat, i, t_frame, fps, reattivita
     )
@@ -456,7 +482,9 @@ def disegna_sismografo(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, col
 
     h, w = canvas.shape[:2]
     spettro = np.clip(feat["spettro"][i] * reattivita * presenza, 0.0, 1.6)
+    classe = feat["spettro_classe"]
     n_barre = len(spettro)
+    palette = [colore_bassi, colore_medi, colore_alti]
 
     spacing = w / n_barre
     cy_int = h // 2
@@ -471,20 +499,17 @@ def disegna_sismografo(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, col
         # brillano di piu', quelle basse restano tenui — tocco artistico
         frazione = np.clip(spettro[k], 0.0, 1.0)
         intens_barra = intensita * (0.40 + 0.60 * frazione)
-        colore = tuple(min(int(c * intens_barra), 255) for c in colore_fg)
+        colore_banda = palette[classe[k]]
+        colore = tuple(min(int(c * intens_barra), 255) for c in colore_banda)
         spess = max(1, int(round(spessore * spessori_random[k])))
 
         cv2.line(canvas, (x, cy_int - alt), (x, cy_int + alt), colore, spess, lineType=cv2.LINE_AA)
 
     return canvas
 
-    return canvas
 
-    return canvas
-
-
-def disegna_julia(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_fg, t1_arr, fps,
-                   reattivita=1.0, spessore=2, stato=None):
+def disegna_julia(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                   colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None):
     """Insieme di Julia (frattale nel piano complesso: z=z^2+c iterato per
     ogni punto), animato facendo ruotare la costante c nel tempo in base
     all'audio — piccole variazioni di c producono forme del frattale
@@ -536,15 +561,15 @@ def disegna_julia(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_f
     campo_u8 = (valore * 255).astype(np.uint8)
     campo_grande = cv2.resize(campo_u8, (w, h), interpolation=cv2.INTER_NEAREST)
 
-    colore_arr = np.array(colore_fg, dtype=np.float32)
+    colore_arr = np.array(_colore_miscelato(feat, i, colore_bassi, colore_medi, colore_alti), dtype=np.float32)
     campo_col = (campo_grande[..., None].astype(np.float32) / 255.0) * colore_arr * intensita
     canvas[:] = np.clip(campo_col, 0, 255).astype(np.uint8)
 
     return canvas
 
 
-def disegna_aritmia(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_fg, t1_arr, fps,
-                     reattivita=1.0, spessore=2, stato=None):
+def disegna_aritmia(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                     colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None):
     """Variante di Sismografo: STESSO motore (spettro di frequenza fisso,
     140 barre in posizione orizzontale FERMA, nessuno storico che scorre),
     ma ogni barra ha una direzione (su o giu') decisa UNA SOLA VOLTA
@@ -552,7 +577,8 @@ def disegna_aritmia(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore
     stilisticamente diversa: invece di estendersi simmetricamente sopra e
     sotto come Sismografo, ogni barra fissa si estende in una sola
     direzione, dando un profilo a gradini irregolare (alcune barre su,
-    altre giu') pur restando ancorate alla loro posizione di frequenza."""
+    altre giu') pur restando ancorate alla loro posizione di frequenza.
+    Ogni barra usa il colore (bassi/medi/alti) della sua banda."""
     _fattore, _k1, _k2, _k_loto, _onset, intensita, _velocita = _parametri_da_audio(
         feat, i, t_frame, fps, reattivita
     )
@@ -560,7 +586,9 @@ def disegna_aritmia(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore
 
     h, w = canvas.shape[:2]
     spettro = np.clip(feat["spettro"][i] * reattivita * presenza, 0.0, 1.6)
+    classe = feat["spettro_classe"]
     n_barre = len(spettro)
+    palette = [colore_bassi, colore_medi, colore_alti]
 
     if stato is None:
         stato = {}
@@ -581,7 +609,8 @@ def disegna_aritmia(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore
 
         frazione = np.clip(spettro[k], 0.0, 1.0)
         intens_barra = intensita * (0.40 + 0.60 * frazione)
-        colore = tuple(min(int(c * intens_barra), 255) for c in colore_fg)
+        colore_banda = palette[classe[k]]
+        colore = tuple(min(int(c * intens_barra), 255) for c in colore_banda)
         spess = max(1, int(round(spessore * spessori_random[k])))
 
         cv2.line(canvas, (x, cy_int), (x, y2), colore, spess, lineType=cv2.LINE_AA)
@@ -600,8 +629,8 @@ MOTORI = {
 }
 
 
-def genera_video(feat, path_out, width, height, colore_bg, colore_fg, forma, fps=FPS, seed=507,
-                  densita=1.0, spessore=2, reattivita=1.0):
+def genera_video(feat, path_out, width, height, colore_bg, colore_bassi, colore_medi, colore_alti,
+                  forma, fps=FPS, seed=507, densita=1.0, spessore=2, reattivita=1.0):
     np.random.seed(seed)
     cx, cy = width // 2, height // 2
     # scala anisotropica sui due assi (invece di un unico raggio isotropo):
@@ -623,7 +652,7 @@ def genera_video(feat, path_out, width, height, colore_bg, colore_fg, forma, fps
 
     n_frames = feat["n_frames"]
     progress = st.progress(0, text="RENDER :: generazione frame in corso...")
-    stato = {}   # stato persistente (usato solo da Graffio, ignorato dalle altre forme)
+    stato = {}   # stato persistente (usato solo da Graffio/Aritmia, ignorato dalle altre forme)
 
     for i in range(n_frames):
         # fade verso il nero (scia stile fosfori)
@@ -633,7 +662,8 @@ def genera_video(feat, path_out, width, height, colore_bg, colore_fg, forma, fps
         canvas_u8 = disegna(
             canvas_u8, t_frame=i, feat=feat, i=i,
             cx=cx, cy=cy, raggio_x=raggio_x, raggio_y=raggio_y,
-            colore_fg=colore_fg, t1_arr=t1_arr, fps=fps,
+            colore_bassi=colore_bassi, colore_medi=colore_medi, colore_alti=colore_alti,
+            t1_arr=t1_arr, fps=fps,
             reattivita=reattivita, spessore=spessore, stato=stato,
         )
         canvas = canvas_u8.astype(np.float32)
@@ -647,8 +677,8 @@ def genera_video(feat, path_out, width, height, colore_bg, colore_fg, forma, fps
     progress.empty()
 
 
-def genera_anteprima(feat, width, height, colore_bg, colore_fg, forma, densita, spessore,
-                      reattivita, seed=507, finestra_s=4.0, fps=FPS):
+def genera_anteprima(feat, width, height, colore_bg, colore_bassi, colore_medi, colore_alti, forma,
+                      densita, spessore, reattivita, seed=507, finestra_s=4.0, fps=FPS):
     """Genera un'immagine statica che mostra come apparirebbe il pattern al
     picco energetico del brano (RMS+bassi massimi). Simula solo la finestra
     di pochi secondi che precede il picco (la scia decade rapidamente, quindi
@@ -679,7 +709,7 @@ def genera_anteprima(feat, width, height, colore_bg, colore_fg, forma, densita, 
 
     canvas = np.zeros((height, width, 3), dtype=np.float32)
     bg = np.array(colore_bg, dtype=np.float32)
-    stato = {}   # stato persistente (usato solo da Graffio)
+    stato = {}   # stato persistente (usato solo da Graffio/Aritmia)
 
     for i in range(i_inizio, i_picco + 1):
         canvas = canvas * fade_alpha + bg * (1 - fade_alpha)
@@ -687,7 +717,8 @@ def genera_anteprima(feat, width, height, colore_bg, colore_fg, forma, densita, 
         canvas_u8 = disegna(
             canvas_u8, t_frame=i, feat=feat, i=i,
             cx=cx, cy=cy, raggio_x=raggio_x, raggio_y=raggio_y,
-            colore_fg=colore_fg, t1_arr=t1_arr, fps=fps,
+            colore_bassi=colore_bassi, colore_medi=colore_medi, colore_alti=colore_alti,
+            t1_arr=t1_arr, fps=fps,
             reattivita=reattivita, spessore=spessore, stato=stato,
         )
         canvas = canvas_u8.astype(np.float32)
@@ -709,7 +740,7 @@ def mux_audio(path_video_muto, path_audio, path_out, durata):
 
 
 def genera_report(nome_file, forma, width, height, risoluzione_label, feat,
-                   hex_bg, hex_fg, densita, spessore, reattivita, seed, vol):
+                   hex_bg, hex_bassi, hex_medi, hex_alti, densita, spessore, reattivita, seed, vol):
     """Report bilingue IT/EN stile Loop507 (blocco IT completo seguito dal
     blocco EN completo, formato compatto senza separatori — come da
     modello fornito). Restituisce sia la versione da mostrare in chat
@@ -725,7 +756,9 @@ def genera_report(nome_file, forma, width, height, risoluzione_label, feat,
         f"SAMPLE RATE     :: {feat['sr']} Hz\n"
         f"BPM STIMATO     :: {feat['bpm']:.0f}\n"
         f"COLORE SFONDO   :: {hex_bg}\n"
-        f"COLORE ANIM.    :: {hex_fg}\n"
+        f"COLORE BASSI    :: {hex_bassi}\n"
+        f"COLORE MEDI     :: {hex_medi}\n"
+        f"COLORE ALTI     :: {hex_alti}\n"
         f"DENSITA'        :: {densita:.2f}x\n"
         f"SPESSORE        :: {spessore}\n"
         f"REATTIVITA'     :: {reattivita:.2f}x\n"
@@ -747,7 +780,9 @@ def genera_report(nome_file, forma, width, height, risoluzione_label, feat,
         f"SAMPLE RATE     :: {feat['sr']} Hz\n"
         f"ESTIMATED BPM   :: {feat['bpm']:.0f}\n"
         f"BACKGROUND COLOR:: {hex_bg}\n"
-        f"ANIMATION COLOR :: {hex_fg}\n"
+        f"LOW COLOR       :: {hex_bassi}\n"
+        f"MID COLOR       :: {hex_medi}\n"
+        f"HIGH COLOR      :: {hex_alti}\n"
         f"DENSITY         :: {densita:.2f}x\n"
         f"THICKNESS       :: {spessore}\n"
         f"REACTIVITY      :: {reattivita:.2f}x\n"
@@ -800,7 +835,15 @@ def main():
     with col3:
         hex_bg = st.color_picker("Colore sfondo :: Background color", "#0a0a0a")
     with col4:
-        hex_fg = st.color_picker("Colore animazione :: Animation color", "#ffffff")
+        st.caption("Colori animazione per banda di frequenza :: Animation colors per frequency band")
+
+    col5, col6, col7 = st.columns(3)
+    with col5:
+        hex_bassi = st.color_picker("Bassi :: Low", "#ff5050")
+    with col6:
+        hex_medi = st.color_picker("Medi :: Mid", "#ffffff")
+    with col7:
+        hex_alti = st.color_picker("Alti :: High", "#50a0ff")
 
     with st.expander("Controlli avanzati :: Advanced controls"):
         densita = st.slider(
@@ -822,7 +865,9 @@ def main():
         return (b, g, r)
 
     colore_bg = hex_a_bgr(hex_bg)
-    colore_fg = hex_a_bgr(hex_fg)
+    colore_bassi = hex_a_bgr(hex_bassi)
+    colore_medi = hex_a_bgr(hex_medi)
+    colore_alti = hex_a_bgr(hex_alti)
     width, height = RISOLUZIONI[risoluzione_label]
 
     if file_audio is not None:
@@ -856,7 +901,7 @@ def main():
         # ad ogni modifica di forma/colori/slider, senza rifare l'analisi DSP
         with st.spinner("Aggiornamento anteprima :: Updating preview..."):
             anteprima_bgr, i_picco = genera_anteprima(
-                feat, width, height, colore_bg, colore_fg, forma,
+                feat, width, height, colore_bg, colore_bassi, colore_medi, colore_alti, forma,
                 densita, spessore, reattivita,
             )
         anteprima_rgb = cv2.cvtColor(anteprima_bgr, cv2.COLOR_BGR2RGB)
@@ -879,7 +924,8 @@ def main():
             with tempfile.TemporaryDirectory() as tmp:
                 path_video_muto = os.path.join(tmp, "video_muto.mp4")
                 genera_video(
-                    feat, path_video_muto, width, height, colore_bg, colore_fg, forma,
+                    feat, path_video_muto, width, height, colore_bg,
+                    colore_bassi, colore_medi, colore_alti, forma,
                     densita=densita, spessore=spessore, reattivita=reattivita,
                 )
 
@@ -901,7 +947,8 @@ def main():
 
                 report_md, report_txt = genera_report(
                     nome_file, forma, width, height, risoluzione_label, feat,
-                    hex_bg, hex_fg, densita, spessore, reattivita, seed=507, vol=vol,
+                    hex_bg, hex_bassi, hex_medi, hex_alti, densita, spessore, reattivita,
+                    seed=507, vol=vol,
                 )
                 st.session_state["basicart_report_md"] = report_md
                 st.session_state["basicart_report_txt"] = report_txt
