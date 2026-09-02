@@ -40,7 +40,7 @@ RISOLUZIONI = {
     "1:1   (720x720)": (720, 720),
 }
 
-FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)"]
+FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)"]
 
 st.set_page_config(page_title="BasicArt // Loop507", layout="centered")
 
@@ -543,6 +543,52 @@ def disegna_julia(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_f
     return canvas
 
 
+def disegna_aritmia(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_fg, t1_arr, fps,
+                     reattivita=1.0, spessore=2, stato=None):
+    """Variante di Sismografo: STESSO motore (spettro di frequenza fisso,
+    140 barre in posizione orizzontale FERMA, nessuno storico che scorre),
+    ma ogni barra ha una direzione (su o giu') decisa UNA SOLA VOLTA
+    all'inizio del render e mai piu' cambiata — non scorrevole, solo
+    stilisticamente diversa: invece di estendersi simmetricamente sopra e
+    sotto come Sismografo, ogni barra fissa si estende in una sola
+    direzione, dando un profilo a gradini irregolare (alcune barre su,
+    altre giu') pur restando ancorate alla loro posizione di frequenza."""
+    _fattore, _k1, _k2, _k_loto, _onset, intensita, _velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    presenza = feat["presenza"][i]
+
+    h, w = canvas.shape[:2]
+    spettro = np.clip(feat["spettro"][i] * reattivita * presenza, 0.0, 1.6)
+    n_barre = len(spettro)
+
+    if stato is None:
+        stato = {}
+    if "direzioni" not in stato or len(stato["direzioni"]) != n_barre:
+        # direzione fissata UNA VOLTA SOLA per l'intero render, non ad ogni
+        # frame: non e' un meccanismo scorrevole, e' una scelta statica
+        stato["direzioni"] = np.random.choice([-1.0, 1.0], size=n_barre)
+    direzioni = stato["direzioni"]
+
+    spacing = w / n_barre
+    cy_int = h // 2
+    altezze = (spettro * (h * 0.46)).astype(np.int32)
+    spessori_random = np.random.uniform(0.75, 1.25, size=n_barre)
+
+    for k in range(n_barre):
+        x = int(k * spacing + spacing / 2)
+        y2 = cy_int + int(altezze[k] * direzioni[k])
+
+        frazione = np.clip(spettro[k], 0.0, 1.0)
+        intens_barra = intensita * (0.40 + 0.60 * frazione)
+        colore = tuple(min(int(c * intens_barra), 255) for c in colore_fg)
+        spess = max(1, int(round(spessore * spessori_random[k])))
+
+        cv2.line(canvas, (x, cy_int), (x, y2), colore, spess, lineType=cv2.LINE_AA)
+
+    return canvas
+
+
 MOTORI = {
     "Deriva (cartesiana)": {"funzione": disegna_ellisse, "n_step": 900, "fade": 0.90},
     "Fioritura (polare)": {"funzione": disegna_loto, "n_step": 3300, "fade": 0.80},
@@ -550,6 +596,7 @@ MOTORI = {
     "Graffio (random walk)": {"funzione": disegna_graffio, "n_step": 60, "fade": 0.85},
     "Sismografo (verticali)": {"funzione": disegna_sismografo, "n_step": 160, "fade": 0.0},
     "Frontiera (piano complesso)": {"funzione": disegna_julia, "n_step": 900, "fade": 0.0},
+    "Aritmia (verticali)": {"funzione": disegna_aritmia, "n_step": 160, "fade": 0.0},
 }
 
 
