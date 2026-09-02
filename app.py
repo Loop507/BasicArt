@@ -40,7 +40,7 @@ RISOLUZIONI = {
     "1:1   (720x720)": (720, 720),
 }
 
-FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)"]
+FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)"]
 
 st.set_page_config(page_title="BasicArt // Loop507", layout="centered")
 
@@ -141,19 +141,26 @@ def _colore_miscelato(feat, i, colore_bassi, colore_medi, colore_alti):
     return tuple(wb * colore_bassi[c] + wm * colore_medi[c] + wa * colore_alti[c] for c in range(3))
 
 
-def _stima_bpm(y, sr):
-    """Stima il tempo (BPM) del brano via beat tracking DSP (no AI).
-    Il valore pilota la velocita' di rotazione/pulsazione del pattern:
-    reinterpretazione originale, non presente negli esempi BASIC di
-    riferimento — collega il "senso del tempo" del brano al motore."""
+def _stima_bpm_e_battiti(y, sr, hop_length, fps, n_frames):
+    """Stima il tempo (BPM) del brano via beat tracking DSP (no AI) e
+    restituisce anche l'indice-frame-video di ogni battito rilevato.
+    Il BPM pilota la velocita' di rotazione/pulsazione del pattern
+    (reinterpretazione originale, non presente negli esempi BASIC di
+    riferimento); i battiti esatti servono per sincronizzare la
+    rivelazione del testo in "Iscrizione" a tempo di musica reale,
+    non a un intervallo fisso."""
     try:
-        tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+        tempo, beat_hop = librosa.beat.beat_track(y=y, sr=sr, hop_length=hop_length)
         bpm = float(np.atleast_1d(tempo)[0])
+        beat_frames_video = np.clip(
+            (np.asarray(beat_hop) * hop_length / sr * fps).astype(np.int32), 0, n_frames - 1
+        )
     except Exception:
         bpm = 120.0
+        beat_frames_video = np.array([], dtype=np.int32)
     if bpm <= 0:
         bpm = 120.0
-    return bpm
+    return bpm, beat_frames_video
 
 
 # ----------------------------------------------------------------------
@@ -180,7 +187,7 @@ def analizza_audio(path_audio, fps, durata_max=MAX_DURATION_S):
 
     bassi, medi, alti = _bande_spettrali(y, sr, hop_length, n_frames)
     spettro, spettro_classe = _spettro_a_barre(y, sr, hop_length, n_frames)
-    bpm = _stima_bpm(y, sr)
+    bpm, battiti_video = _stima_bpm_e_battiti(y, sr, hop_length, fps, n_frames)
 
     # gate di presenza: 0 nel silenzio vero, 1 appena il volume supera una soglia
     # relativa al picco del brano — usato per far scomparire/fermare l'animazione
@@ -203,6 +210,7 @@ def analizza_audio(path_audio, fps, durata_max=MAX_DURATION_S):
         "spettro_classe": spettro_classe,
         "presenza": presenza,
         "bpm": bpm,
+        "battiti_video": battiti_video,
         "durata": durata,
         "n_frames": n_frames,
         "sr": sr,
@@ -280,7 +288,7 @@ def _parametri_da_audio(feat, i, t_frame, fps, reattivita=1.0):
 
 
 def disegna_ellisse(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
-                     colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None):
+                     colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase=""):
     """Pattern cartesiano: x=f(t2), y=f(t1). Scala anisotropica (raggio_x/
     raggio_y separati) per riempire il fotogramma invece di restare confinato
     al centro — reinterpretazione mia rispetto al riferimento (che usava un
@@ -312,7 +320,7 @@ def disegna_ellisse(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore
 
 
 def disegna_loto(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
-                  colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None):
+                  colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase=""):
     """Pattern polare: r=f(t2), a=f(t1), x=r*cos(a), y=r*sin(a).
     r e a condividono la stessa frequenza secondaria k (come nel BASIC
     originale) per mantenere la simmetria a petali. A differenza
@@ -363,7 +371,7 @@ def disegna_loto(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_ba
 
 
 def disegna_pulviscolo(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
-                        colore_alti, t1_arr, fps, reattivita=1.0, spessore=1, stato=None):
+                        colore_alti, t1_arr, fps, reattivita=1.0, spessore=1, stato=None, frase=""):
     """Struttura radicalmente diversa dalle altre due: una spirale di
     polvere che si espande dal centro verso il bordo (non ellissi chiuse
     ne' petali), pilotata dall'audio. Il numero di giri della spirale
@@ -414,7 +422,7 @@ def disegna_pulviscolo(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, col
 
 
 def disegna_graffio(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
-                     colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None):
+                     colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase=""):
     """Random walk di segmenti brevi che vaga per il fotogramma con
     teletrasporto ai bordi (wrap-around) — ispirato a un terzo riferimento
     BASIC che usa RANDOM invece di funzioni trigonometriche. A differenza
@@ -463,7 +471,7 @@ def disegna_graffio(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore
 
 
 def disegna_sismografo(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
-                        colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None):
+                        colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase=""):
     """Spectrum analyzer: barre verticali FERME in posizione orizzontale
     (non scorrono lateralmente) — ogni barra rappresenta una banda di
     frequenza log-spaziata (come un equalizzatore reale, precalcolata una
@@ -509,7 +517,7 @@ def disegna_sismografo(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, col
 
 
 def disegna_julia(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
-                   colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None):
+                   colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase=""):
     """Insieme di Julia (frattale nel piano complesso: z=z^2+c iterato per
     ogni punto), animato facendo ruotare la costante c nel tempo in base
     all'audio — piccole variazioni di c producono forme del frattale
@@ -569,7 +577,7 @@ def disegna_julia(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_b
 
 
 def disegna_aritmia(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
-                     colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None):
+                     colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase=""):
     """Variante di Sismografo: STESSO motore (spettro di frequenza fisso,
     140 barre in posizione orizzontale FERMA, nessuno storico che scorre),
     ma ogni barra ha una direzione (su o giu') decisa UNA SOLA VOLTA
@@ -618,6 +626,73 @@ def disegna_aritmia(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore
     return canvas
 
 
+def disegna_iscrizione(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                        colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase=""):
+    """Una frase scelta dall'utente viene "scritta" una lettera alla volta,
+    sincronizzata ai battiti REALI del brano (non a un intervallo fisso) —
+    ogni volta che viene rilevato un beat, si rivela il carattere
+    successivo. Cornice di caratteri ripetuti ai bordi, che cicla
+    attraverso l'alfabeto ad ogni battito e pulsa con i bassi — omaggio
+    liberamente reinterpretato alla texture a bande concentriche di
+    caratteri del pattern C64 BASIC V2 di riferimento (non una copia:
+    quello usava lettere disposte in anelli statici, qui e' una cornice
+    dinamica sincronizzata all'audio)."""
+    fattore, _k1, _k2, _k_loto, _onset, intensita, _velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    bassi = feat["bassi"][i] * reattivita
+
+    h, w = canvas.shape[:2]
+    battiti = feat["battiti_video"]
+    n_battiti_finora = int(np.searchsorted(battiti, i, side="right"))
+
+    colore = _colore_miscelato(feat, i, colore_bassi, colore_medi, colore_alti)
+    colore_int = tuple(min(int(c * intensita), 255) for c in colore)
+
+    alfabeto = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    carattere_bordo = alfabeto[n_battiti_finora % len(alfabeto)]
+
+    # cornice di caratteri ripetuti ai bordi, dimensione pulsante sui bassi —
+    # omaggio alla texture del riferimento, non una copia letterale
+    scala_bordo = 0.55 + 0.35 * np.clip(fattore, 0.0, 1.5) * (0.7 + 0.6 * bassi)
+    (tw, th), _ = cv2.getTextSize(carattere_bordo, cv2.FONT_HERSHEY_SIMPLEX, scala_bordo, spessore)
+    passo = max(tw, 1) + 10
+
+    for x in range(0, w, passo):
+        cv2.putText(canvas, carattere_bordo, (x, th + 4), cv2.FONT_HERSHEY_SIMPLEX,
+                    scala_bordo, colore_int, 1, cv2.LINE_AA)
+        cv2.putText(canvas, carattere_bordo, (x, h - 8), cv2.FONT_HERSHEY_SIMPLEX,
+                    scala_bordo, colore_int, 1, cv2.LINE_AA)
+    for y in range(th + 20, h - 20, th + 14):
+        cv2.putText(canvas, carattere_bordo, (4, y), cv2.FONT_HERSHEY_SIMPLEX,
+                    scala_bordo, colore_int, 1, cv2.LINE_AA)
+        cv2.putText(canvas, carattere_bordo, (w - tw - 8, y), cv2.FONT_HERSHEY_SIMPLEX,
+                    scala_bordo, colore_int, 1, cv2.LINE_AA)
+
+    if frase:
+        n_caratteri = min(len(frase), n_battiti_finora)
+        testo_visibile = frase[:n_caratteri]
+
+        # dimensione del testo calcolata per stare nella larghezza disponibile,
+        # misurando sull'INTERA frase (non solo la parte gia' rivelata) cosi'
+        # la dimensione non cambia man mano che le lettere compaiono
+        scala = 2.0
+        spessore_testo = max(2, spessore + 1)
+        larghezza_target = raggio_x * 1.9
+        (tw_f, th_f), _ = cv2.getTextSize(frase, cv2.FONT_HERSHEY_DUPLEX, scala, spessore_testo)
+        if tw_f > 0:
+            scala *= min(1.0, larghezza_target / tw_f)
+        (tw_f, th_f), _ = cv2.getTextSize(frase, cv2.FONT_HERSHEY_DUPLEX, scala, spessore_testo)
+
+        x0 = int(cx - tw_f / 2)
+        y0 = int(cy + th_f / 2)
+        if testo_visibile:
+            cv2.putText(canvas, testo_visibile, (x0, y0), cv2.FONT_HERSHEY_DUPLEX,
+                        scala, colore_int, spessore_testo, cv2.LINE_AA)
+
+    return canvas
+
+
 MOTORI = {
     "Deriva (cartesiana)": {"funzione": disegna_ellisse, "n_step": 900, "fade": 0.90},
     "Fioritura (polare)": {"funzione": disegna_loto, "n_step": 3300, "fade": 0.80},
@@ -626,11 +701,12 @@ MOTORI = {
     "Sismografo (verticali)": {"funzione": disegna_sismografo, "n_step": 160, "fade": 0.0},
     "Frontiera (piano complesso)": {"funzione": disegna_julia, "n_step": 900, "fade": 0.0},
     "Aritmia (verticali)": {"funzione": disegna_aritmia, "n_step": 160, "fade": 0.0},
+    "Iscrizione (testo a tempo)": {"funzione": disegna_iscrizione, "n_step": 100, "fade": 0.0},
 }
 
 
 def genera_video(feat, path_out, width, height, colore_bg, colore_bassi, colore_medi, colore_alti,
-                  forma, fps=FPS, seed=507, densita=1.0, spessore=2, reattivita=1.0):
+                  forma, fps=FPS, seed=507, densita=1.0, spessore=2, reattivita=1.0, frase=""):
     np.random.seed(seed)
     cx, cy = width // 2, height // 2
     # scala anisotropica sui due assi (invece di un unico raggio isotropo):
@@ -664,7 +740,7 @@ def genera_video(feat, path_out, width, height, colore_bg, colore_bassi, colore_
             cx=cx, cy=cy, raggio_x=raggio_x, raggio_y=raggio_y,
             colore_bassi=colore_bassi, colore_medi=colore_medi, colore_alti=colore_alti,
             t1_arr=t1_arr, fps=fps,
-            reattivita=reattivita, spessore=spessore, stato=stato,
+            reattivita=reattivita, spessore=spessore, stato=stato, frase=frase,
         )
         canvas = canvas_u8.astype(np.float32)
 
@@ -678,7 +754,7 @@ def genera_video(feat, path_out, width, height, colore_bg, colore_bassi, colore_
 
 
 def genera_anteprima(feat, width, height, colore_bg, colore_bassi, colore_medi, colore_alti, forma,
-                      densita, spessore, reattivita, seed=507, finestra_s=4.0, fps=FPS):
+                      densita, spessore, reattivita, seed=507, finestra_s=4.0, fps=FPS, frase=""):
     """Genera un'immagine statica che mostra come apparirebbe il pattern al
     picco energetico del brano (RMS+bassi massimi). Simula solo la finestra
     di pochi secondi che precede il picco (la scia decade rapidamente, quindi
@@ -719,7 +795,7 @@ def genera_anteprima(feat, width, height, colore_bg, colore_bassi, colore_medi, 
             cx=cx, cy=cy, raggio_x=raggio_x, raggio_y=raggio_y,
             colore_bassi=colore_bassi, colore_medi=colore_medi, colore_alti=colore_alti,
             t1_arr=t1_arr, fps=fps,
-            reattivita=reattivita, spessore=spessore, stato=stato,
+            reattivita=reattivita, spessore=spessore, stato=stato, frase=frase,
         )
         canvas = canvas_u8.astype(np.float32)
 
@@ -823,6 +899,15 @@ def main():
 
     forma = st.selectbox("Forma :: Shape", FORME)
 
+    frase = ""
+    if forma == "Iscrizione (testo a tempo)":
+        frase = st.text_input(
+            "Frase da scrivere a tempo :: Phrase to write in time",
+            max_chars=60,
+            help="Si rivela una lettera per ogni battito rilevato nel brano :: "
+                 "Reveals one letter per detected beat in the track"
+        ).upper()
+
     col1, col2 = st.columns(2)
     with col1:
         risoluzione_label = st.selectbox(
@@ -902,7 +987,7 @@ def main():
         with st.spinner("Aggiornamento anteprima :: Updating preview..."):
             anteprima_bgr, i_picco = genera_anteprima(
                 feat, width, height, colore_bg, colore_bassi, colore_medi, colore_alti, forma,
-                densita, spessore, reattivita,
+                densita, spessore, reattivita, frase=frase,
             )
         anteprima_rgb = cv2.cvtColor(anteprima_bgr, cv2.COLOR_BGR2RGB)
         st.image(
@@ -926,7 +1011,7 @@ def main():
                 genera_video(
                     feat, path_video_muto, width, height, colore_bg,
                     colore_bassi, colore_medi, colore_alti, forma,
-                    densita=densita, spessore=spessore, reattivita=reattivita,
+                    densita=densita, spessore=spessore, reattivita=reattivita, frase=frase,
                 )
 
                 path_finale = os.path.join(tmp, "basicart_output.mp4")
