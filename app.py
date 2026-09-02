@@ -288,7 +288,7 @@ def _parametri_da_audio(feat, i, t_frame, fps, reattivita=1.0):
 
 
 def disegna_ellisse(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
-                     colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase=""):
+                     colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="", dimensione_testo=1.0, font_scelto=0, lettere_extra=40):
     """Pattern cartesiano: x=f(t2), y=f(t1). Scala anisotropica (raggio_x/
     raggio_y separati) per riempire il fotogramma invece di restare confinato
     al centro — reinterpretazione mia rispetto al riferimento (che usava un
@@ -320,7 +320,7 @@ def disegna_ellisse(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore
 
 
 def disegna_loto(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
-                  colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase=""):
+                  colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="", dimensione_testo=1.0, font_scelto=0, lettere_extra=40):
     """Pattern polare: r=f(t2), a=f(t1), x=r*cos(a), y=r*sin(a).
     r e a condividono la stessa frequenza secondaria k (come nel BASIC
     originale) per mantenere la simmetria a petali. A differenza
@@ -371,7 +371,7 @@ def disegna_loto(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_ba
 
 
 def disegna_pulviscolo(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
-                        colore_alti, t1_arr, fps, reattivita=1.0, spessore=1, stato=None, frase=""):
+                        colore_alti, t1_arr, fps, reattivita=1.0, spessore=1, stato=None, frase="", dimensione_testo=1.0, font_scelto=0, lettere_extra=40):
     """Struttura radicalmente diversa dalle altre due: una spirale di
     polvere che si espande dal centro verso il bordo (non ellissi chiuse
     ne' petali), pilotata dall'audio. Il numero di giri della spirale
@@ -422,7 +422,7 @@ def disegna_pulviscolo(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, col
 
 
 def disegna_graffio(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
-                     colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase=""):
+                     colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="", dimensione_testo=1.0, font_scelto=0, lettere_extra=40):
     """Random walk di segmenti brevi che vaga per il fotogramma con
     teletrasporto ai bordi (wrap-around) — ispirato a un terzo riferimento
     BASIC che usa RANDOM invece di funzioni trigonometriche. A differenza
@@ -471,7 +471,7 @@ def disegna_graffio(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore
 
 
 def disegna_sismografo(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
-                        colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase=""):
+                        colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="", dimensione_testo=1.0, font_scelto=0, lettere_extra=40):
     """Spectrum analyzer: barre verticali FERME in posizione orizzontale
     (non scorrono lateralmente) — ogni barra rappresenta una banda di
     frequenza log-spaziata (come un equalizzatore reale, precalcolata una
@@ -517,7 +517,7 @@ def disegna_sismografo(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, col
 
 
 def disegna_julia(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
-                   colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase=""):
+                   colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="", dimensione_testo=1.0, font_scelto=0, lettere_extra=40):
     """Insieme di Julia (frattale nel piano complesso: z=z^2+c iterato per
     ogni punto), animato facendo ruotare la costante c nel tempo in base
     all'audio — piccole variazioni di c producono forme del frattale
@@ -577,7 +577,7 @@ def disegna_julia(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_b
 
 
 def disegna_aritmia(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
-                     colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase=""):
+                     colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="", dimensione_testo=1.0, font_scelto=0, lettere_extra=40):
     """Variante di Sismografo: STESSO motore (spettro di frequenza fisso,
     140 barre in posizione orizzontale FERMA, nessuno storico che scorre),
     ma ogni barra ha una direzione (su o giu') decisa UNA SOLA VOLTA
@@ -626,69 +626,160 @@ def disegna_aritmia(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore
     return canvas
 
 
+_ALFABETO_ISCRIZIONE = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+_FONT_ISCRIZIONE = {
+    0: cv2.FONT_HERSHEY_SIMPLEX,
+    1: cv2.FONT_HERSHEY_DUPLEX,
+    2: cv2.FONT_HERSHEY_TRIPLEX,
+    3: cv2.FONT_HERSHEY_COMPLEX,
+    4: cv2.FONT_HERSHEY_PLAIN,
+}
+
+
 def disegna_iscrizione(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
-                        colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase=""):
-    """Una frase scelta dall'utente viene "scritta" una lettera alla volta,
-    sincronizzata ai battiti REALI del brano (non a un intervallo fisso) —
-    ogni volta che viene rilevato un beat, si rivela il carattere
-    successivo. Cornice di caratteri ripetuti ai bordi, che cicla
-    attraverso l'alfabeto ad ogni battito e pulsa con i bassi — omaggio
-    liberamente reinterpretato alla texture a bande concentriche di
-    caratteri del pattern C64 BASIC V2 di riferimento (non una copia:
-    quello usava lettere disposte in anelli statici, qui e' una cornice
-    dinamica sincronizzata all'audio)."""
-    fattore, _k1, _k2, _k_loto, _onset, intensita, _velocita = _parametri_da_audio(
-        feat, i, t_frame, fps, reattivita
-    )
-    bassi = feat["bassi"][i] * reattivita
+                        colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
+                        dimensione_testo=1.0, font_scelto=0, lettere_extra=40):
+    """La frase si materializza da uno sciame di lettere casuali che vagano
+    per lo schermo — stile "decrittazione": ogni lettera del bersaglio vaga
+    liberamente mostrando caratteri casuali finche' non arriva il suo turno,
+    poi scivola dolcemente nella posizione finale e si blocca sulla lettera
+    corretta. Lettere decorative extra continuano a vagare sullo sfondo
+    senza mai bloccarsi, per riempire lo schermo. I tempi di blocco sono
+    calcolati per completare SEMPRE la frase entro la fine del brano: se ci
+    sono abbastanza battiti rilevati li usa (un carattere per battito),
+    altrimenti distribuisce i caratteri in modo uniforme su tutta la durata
+    — cosi' anche un brano breve con una frase corta arriva sempre a
+    completarsi. Reinterpretazione libera (non copia) della texture a
+    caratteri di un pattern C64 BASIC V2 mostrato come riferimento."""
+    if not frase:
+        return canvas
 
     h, w = canvas.shape[:2]
-    battiti = feat["battiti_video"]
-    n_battiti_finora = int(np.searchsorted(battiti, i, side="right"))
-
+    font = _FONT_ISCRIZIONE.get(font_scelto, cv2.FONT_HERSHEY_SIMPLEX)
     colore = _colore_miscelato(feat, i, colore_bassi, colore_medi, colore_alti)
-    colore_int = tuple(min(int(c * intensita), 255) for c in colore)
+    _fattore, _k1, _k2, _k_loto, _onset, intensita, _velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    n_car = len(frase)
+    n_frames_tot = feat["n_frames"]
 
-    alfabeto = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-    carattere_bordo = alfabeto[n_battiti_finora % len(alfabeto)]
+    if stato is None:
+        stato = {}
 
-    # cornice di caratteri ripetuti ai bordi, dimensione pulsante sui bassi —
-    # omaggio alla texture del riferimento, non una copia letterale
-    scala_bordo = 0.55 + 0.35 * np.clip(fattore, 0.0, 1.5) * (0.7 + 0.6 * bassi)
-    (tw, th), _ = cv2.getTextSize(carattere_bordo, cv2.FONT_HERSHEY_SIMPLEX, scala_bordo, spessore)
-    passo = max(tw, 1) + 10
-
-    for x in range(0, w, passo):
-        cv2.putText(canvas, carattere_bordo, (x, th + 4), cv2.FONT_HERSHEY_SIMPLEX,
-                    scala_bordo, colore_int, 1, cv2.LINE_AA)
-        cv2.putText(canvas, carattere_bordo, (x, h - 8), cv2.FONT_HERSHEY_SIMPLEX,
-                    scala_bordo, colore_int, 1, cv2.LINE_AA)
-    for y in range(th + 20, h - 20, th + 14):
-        cv2.putText(canvas, carattere_bordo, (4, y), cv2.FONT_HERSHEY_SIMPLEX,
-                    scala_bordo, colore_int, 1, cv2.LINE_AA)
-        cv2.putText(canvas, carattere_bordo, (w - tw - 8, y), cv2.FONT_HERSHEY_SIMPLEX,
-                    scala_bordo, colore_int, 1, cv2.LINE_AA)
-
-    if frase:
-        n_caratteri = min(len(frase), n_battiti_finora)
-        testo_visibile = frase[:n_caratteri]
-
-        # dimensione del testo calcolata per stare nella larghezza disponibile,
-        # misurando sull'INTERA frase (non solo la parte gia' rivelata) cosi'
-        # la dimensione non cambia man mano che le lettere compaiono
-        scala = 2.0
+    if "isc_lock_frames" not in stato:
+        # dimensione e posizione bersaglio di ogni carattere, calcolate una
+        # sola volta: la frase intera determina la scala (non cambia mentre
+        # le lettere si assestano)
+        scala = 2.0 * dimensione_testo
         spessore_testo = max(2, spessore + 1)
         larghezza_target = raggio_x * 1.9
-        (tw_f, th_f), _ = cv2.getTextSize(frase, cv2.FONT_HERSHEY_DUPLEX, scala, spessore_testo)
+        (tw_f, th_f), _ = cv2.getTextSize(frase, font, scala, spessore_testo)
         if tw_f > 0:
             scala *= min(1.0, larghezza_target / tw_f)
-        (tw_f, th_f), _ = cv2.getTextSize(frase, cv2.FONT_HERSHEY_DUPLEX, scala, spessore_testo)
+        (tw_f, th_f), _ = cv2.getTextSize(frase, font, scala, spessore_testo)
+        x0 = cx - tw_f / 2
+        y0 = cy + th_f / 2
 
-        x0 = int(cx - tw_f / 2)
-        y0 = int(cy + th_f / 2)
-        if testo_visibile:
-            cv2.putText(canvas, testo_visibile, (x0, y0), cv2.FONT_HERSHEY_DUPLEX,
-                        scala, colore_int, spessore_testo, cv2.LINE_AA)
+        posizioni_target = []
+        for k in range(n_car):
+            (w_prefisso, _), _ = cv2.getTextSize(frase[:k], font, scala, spessore_testo)
+            posizioni_target.append(np.array([x0 + w_prefisso, y0]))
+
+        # tempi di blocco: un carattere per battito se ce ne sono abbastanza,
+        # altrimenti distribuiti uniformemente su tutta la durata del brano
+        battiti = feat["battiti_video"]
+        lock_frames = np.zeros(n_car, dtype=np.int32)
+        if len(battiti) >= n_car:
+            lock_frames[:] = battiti[:n_car]
+        else:
+            for k in range(n_car):
+                lock_frames[k] = int(round((k + 1) / n_car * (n_frames_tot - 1)))
+
+        rng = np.random.default_rng(507)
+        margine = 40
+        pos_correnti = np.array([
+            [rng.uniform(margine, max(margine + 1, w - margine)),
+             rng.uniform(margine, max(margine + 1, h - margine))]
+            for _ in range(n_car)
+        ])
+        vel = rng.uniform(-1.6, 1.6, size=(n_car, 2))
+
+        n_extra = max(0, int(lettere_extra))
+        pos_extra = np.array([[rng.uniform(0, w), rng.uniform(0, h)] for _ in range(n_extra)]) \
+            if n_extra > 0 else np.zeros((0, 2))
+        vel_extra = rng.uniform(-1.3, 1.3, size=(n_extra, 2)) if n_extra > 0 else np.zeros((0, 2))
+
+        stato["isc_font"] = font
+        stato["isc_scala"] = scala
+        stato["isc_spessore_testo"] = spessore_testo
+        stato["isc_pos_target"] = posizioni_target
+        stato["isc_lock_frames"] = lock_frames
+        stato["isc_pos"] = pos_correnti
+        stato["isc_vel"] = vel
+        stato["isc_bloccato"] = np.zeros(n_car, dtype=bool)
+        stato["isc_lettera"] = [rng.choice(list(_ALFABETO_ISCRIZIONE)) for _ in range(n_car)]
+        stato["isc_pos_extra"] = pos_extra
+        stato["isc_vel_extra"] = vel_extra
+        stato["isc_lettera_extra"] = [rng.choice(list(_ALFABETO_ISCRIZIONE)) for _ in range(n_extra)]
+        stato["isc_rng"] = rng
+
+        # se l'anteprima parte da un frame gia' avanzato nel brano, i
+        # caratteri il cui turno e' gia' passato vanno mostrati subito
+        # bloccati, non fatti ripartire dal vagabondaggio
+        for k in range(n_car):
+            if lock_frames[k] <= i:
+                stato["isc_bloccato"][k] = True
+                stato["isc_pos"][k] = posizioni_target[k]
+                stato["isc_lettera"][k] = frase[k]
+
+    font = stato["isc_font"]
+    scala = stato["isc_scala"]
+    spessore_testo = stato["isc_spessore_testo"]
+    rng = stato["isc_rng"]
+    transizione = max(1, int(0.6 * fps))
+    margine = 20
+
+    def rimbalza(pos, vel):
+        for ax, lim in ((0, w), (1, h)):
+            if pos[ax] < margine or pos[ax] > lim - margine:
+                vel[ax] *= -1
+
+    for k in range(n_car):
+        if stato["isc_bloccato"][k]:
+            continue
+        lf = stato["isc_lock_frames"][k]
+        if i >= lf:
+            stato["isc_bloccato"][k] = True
+            stato["isc_pos"][k] = stato["isc_pos_target"][k]
+            stato["isc_lettera"][k] = frase[k]
+        elif i >= lf - transizione:
+            t_rel = (i - (lf - transizione)) / transizione
+            stato["isc_pos"][k] = (1 - t_rel) * stato["isc_pos"][k] + t_rel * stato["isc_pos_target"][k]
+            if i % 3 == 0:
+                stato["isc_lettera"][k] = rng.choice(list(_ALFABETO_ISCRIZIONE))
+        else:
+            rimbalza(stato["isc_pos"][k], stato["isc_vel"][k])
+            stato["isc_pos"][k] = stato["isc_pos"][k] + stato["isc_vel"][k]
+            if i % 4 == 0:
+                stato["isc_lettera"][k] = rng.choice(list(_ALFABETO_ISCRIZIONE))
+
+    for j in range(len(stato["isc_pos_extra"])):
+        rimbalza(stato["isc_pos_extra"][j], stato["isc_vel_extra"][j])
+        stato["isc_pos_extra"][j] = stato["isc_pos_extra"][j] + stato["isc_vel_extra"][j]
+        if i % 5 == 0:
+            stato["isc_lettera_extra"][j] = rng.choice(list(_ALFABETO_ISCRIZIONE))
+
+    colore_extra = tuple(min(int(c * intensita * 0.35), 255) for c in colore)
+    for j in range(len(stato["isc_pos_extra"])):
+        x, y = stato["isc_pos_extra"][j]
+        cv2.putText(canvas, stato["isc_lettera_extra"][j], (int(x), int(y)), font,
+                    scala * 0.55, colore_extra, max(1, spessore_testo - 1), cv2.LINE_AA)
+
+    colore_int = tuple(min(int(c * intensita), 255) for c in colore)
+    for k in range(n_car):
+        x, y = stato["isc_pos"][k]
+        cv2.putText(canvas, stato["isc_lettera"][k], (int(x), int(y)), font,
+                    scala, colore_int, spessore_testo, cv2.LINE_AA)
 
     return canvas
 
@@ -706,7 +797,8 @@ MOTORI = {
 
 
 def genera_video(feat, path_out, width, height, colore_bg, colore_bassi, colore_medi, colore_alti,
-                  forma, fps=FPS, seed=507, densita=1.0, spessore=2, reattivita=1.0, frase=""):
+                  forma, fps=FPS, seed=507, densita=1.0, spessore=2, reattivita=1.0, frase="",
+                  dimensione_testo=1.0, font_scelto=0, lettere_extra=40):
     np.random.seed(seed)
     cx, cy = width // 2, height // 2
     # scala anisotropica sui due assi (invece di un unico raggio isotropo):
@@ -728,7 +820,7 @@ def genera_video(feat, path_out, width, height, colore_bg, colore_bassi, colore_
 
     n_frames = feat["n_frames"]
     progress = st.progress(0, text="RENDER :: generazione frame in corso...")
-    stato = {}   # stato persistente (usato solo da Graffio/Aritmia, ignorato dalle altre forme)
+    stato = {}   # stato persistente (usato solo da Graffio/Aritmia/Iscrizione, ignorato dalle altre)
 
     for i in range(n_frames):
         # fade verso il nero (scia stile fosfori)
@@ -741,6 +833,7 @@ def genera_video(feat, path_out, width, height, colore_bg, colore_bassi, colore_
             colore_bassi=colore_bassi, colore_medi=colore_medi, colore_alti=colore_alti,
             t1_arr=t1_arr, fps=fps,
             reattivita=reattivita, spessore=spessore, stato=stato, frase=frase,
+            dimensione_testo=dimensione_testo, font_scelto=font_scelto, lettere_extra=lettere_extra,
         )
         canvas = canvas_u8.astype(np.float32)
 
@@ -754,7 +847,8 @@ def genera_video(feat, path_out, width, height, colore_bg, colore_bassi, colore_
 
 
 def genera_anteprima(feat, width, height, colore_bg, colore_bassi, colore_medi, colore_alti, forma,
-                      densita, spessore, reattivita, seed=507, finestra_s=4.0, fps=FPS, frase=""):
+                      densita, spessore, reattivita, seed=507, finestra_s=4.0, fps=FPS, frase="",
+                      dimensione_testo=1.0, font_scelto=0, lettere_extra=40):
     """Genera un'immagine statica che mostra come apparirebbe il pattern al
     picco energetico del brano (RMS+bassi massimi). Simula solo la finestra
     di pochi secondi che precede il picco (la scia decade rapidamente, quindi
@@ -796,6 +890,7 @@ def genera_anteprima(feat, width, height, colore_bg, colore_bassi, colore_medi, 
             colore_bassi=colore_bassi, colore_medi=colore_medi, colore_alti=colore_alti,
             t1_arr=t1_arr, fps=fps,
             reattivita=reattivita, spessore=spessore, stato=stato, frase=frase,
+            dimensione_testo=dimensione_testo, font_scelto=font_scelto, lettere_extra=lettere_extra,
         )
         canvas = canvas_u8.astype(np.float32)
 
@@ -900,13 +995,38 @@ def main():
     forma = st.selectbox("Forma :: Shape", FORME)
 
     frase = ""
+    dimensione_testo = 1.0
+    font_scelto = 0
+    lettere_extra = 40
     if forma == "Iscrizione (testo a tempo)":
         frase = st.text_input(
             "Frase da scrivere a tempo :: Phrase to write in time",
             max_chars=60,
-            help="Si rivela una lettera per ogni battito rilevato nel brano :: "
-                 "Reveals one letter per detected beat in the track"
+            help="Le lettere si assestano nella posizione giusta seguendo i battiti del "
+                 "brano, completando sempre la frase entro la fine :: Letters settle into "
+                 "place following the track's beats, always completing by the end"
         ).upper()
+
+        st.caption("Controlli dedicati :: Dedicated controls — Iscrizione")
+        colA, colB, colC = st.columns(3)
+        with colA:
+            dimensione_testo = st.slider(
+                "Dimensione testo :: Text size", 0.5, 2.0, 1.0, 0.1
+            )
+        with colB:
+            nomi_font = {
+                0: "Semplice :: Simple", 1: "Doppio :: Double", 2: "Triplo :: Triple",
+                3: "Complesso :: Complex", 4: "Stampatello :: Plain",
+            }
+            font_scelto = st.selectbox(
+                "Font", options=list(nomi_font.keys()), format_func=lambda k: nomi_font[k]
+            )
+        with colC:
+            lettere_extra = st.slider(
+                "Lettere fluttuanti :: Floating letters", 0, 120, 40, 5,
+                help="Quante lettere decorative vagano sullo sfondo senza mai assestarsi :: "
+                     "How many decorative letters wander in the background without settling"
+            )
 
     col1, col2 = st.columns(2)
     with col1:
@@ -988,6 +1108,7 @@ def main():
             anteprima_bgr, i_picco = genera_anteprima(
                 feat, width, height, colore_bg, colore_bassi, colore_medi, colore_alti, forma,
                 densita, spessore, reattivita, frase=frase,
+                dimensione_testo=dimensione_testo, font_scelto=font_scelto, lettere_extra=lettere_extra,
             )
         anteprima_rgb = cv2.cvtColor(anteprima_bgr, cv2.COLOR_BGR2RGB)
         st.image(
@@ -1012,6 +1133,7 @@ def main():
                     feat, path_video_muto, width, height, colore_bg,
                     colore_bassi, colore_medi, colore_alti, forma,
                     densita=densita, spessore=spessore, reattivita=reattivita, frase=frase,
+                    dimensione_testo=dimensione_testo, font_scelto=font_scelto, lettere_extra=lettere_extra,
                 )
 
                 path_finale = os.path.join(tmp, "basicart_output.mp4")
