@@ -91,7 +91,7 @@ def _bande_spettrali(y, sr, hop_length, n_frames):
     return _norm(bassi), _norm(medi), _norm(alti)
 
 
-def _spettro_a_barre(y, sr, hop_length, n_frames, n_barre=64):
+def _spettro_a_barre(y, sr, hop_length, n_frames, n_barre=140):
     """Spettro a barre nel tempo: n_barre bande di frequenza log-spaziate
     (come un vero equalizzatore, piu' risoluzione sui bassi), energia
     normalizzata banda per banda sul proprio massimo nel brano. Usato per
@@ -437,14 +437,18 @@ def disegna_graffio(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore
 
 def disegna_sismografo(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_fg, t1_arr, fps,
                         reattivita=1.0, spessore=2, stato=None):
-    """Spectrum analyzer vero: barre verticali FERME in posizione (non
-    scorrono lateralmente) — ogni barra rappresenta una banda di frequenza
-    log-spaziata (come un equalizzatore reale) e la sua altezza pulsa su e
-    giu' nel tempo seguendo l'energia di quella banda. Le barre si estendono
-    simmetricamente sopra e sotto la linea centrale. Il numero di barre e'
-    fisso (deciso in analisi, non dallo slider densita', perche' lo spettro
-    e' precalcolato una sola volta su tutto il brano). Monocromatico;
-    beneficia del gate di silenzio (spettro azzerato nel silenzio vero)."""
+    """Spectrum analyzer: barre verticali FERME in posizione orizzontale
+    (non scorrono lateralmente) — ogni barra rappresenta una banda di
+    frequenza log-spaziata (come un equalizzatore reale, precalcolata una
+    sola volta su tutto il brano) e la sua altezza pulsa su e giu' nel
+    tempo seguendo l'energia di quella banda. Estensione simmetrica sopra/
+    sotto la linea centrale. Tocchi artistici (per non ridurlo a un
+    equalizzatore piatto): luminosita' di ogni barra proporzionale alla
+    sua altezza (le piu' energiche brillano di piu'), spessore che varia
+    leggermente barra per barra. Monocromatico; beneficia del gate di
+    silenzio (spettro azzerato nel silenzio vero). Il numero di barre e'
+    fisso (non controllato dallo slider densita', perche' lo spettro e'
+    precalcolato una sola volta in analisi)."""
     _fattore, _k1, _k2, _k_loto, _onset, intensita, _velocita = _parametri_da_audio(
         feat, i, t_frame, fps, reattivita
     )
@@ -455,15 +459,24 @@ def disegna_sismografo(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, col
     n_barre = len(spettro)
 
     spacing = w / n_barre
-    colore = tuple(min(int(c * intensita), 255) for c in colore_fg)
     cy_int = h // 2
     altezze = (spettro * (h * 0.46)).astype(np.int32)
+    spessori_random = np.random.uniform(0.75, 1.25, size=n_barre)
 
     for k in range(n_barre):
         x = int(k * spacing + spacing / 2)
-        y_alto = cy_int - altezze[k]
-        y_basso = cy_int + altezze[k]
-        cv2.line(canvas, (x, y_alto), (x, y_basso), colore, spessore, lineType=cv2.LINE_AA)
+        alt = altezze[k]
+
+        # luminosita' proporzionale all'altezza: le barre piu' energiche
+        # brillano di piu', quelle basse restano tenui — tocco artistico
+        frazione = np.clip(spettro[k], 0.0, 1.0)
+        intens_barra = intensita * (0.40 + 0.60 * frazione)
+        colore = tuple(min(int(c * intens_barra), 255) for c in colore_fg)
+        spess = max(1, int(round(spessore * spessori_random[k])))
+
+        cv2.line(canvas, (x, cy_int - alt), (x, cy_int + alt), colore, spess, lineType=cv2.LINE_AA)
+
+    return canvas
 
     return canvas
 
