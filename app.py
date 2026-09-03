@@ -668,14 +668,14 @@ def disegna_iscrizione(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, col
 
     if "isc_lock_frames" not in stato:
         # dimensione e posizione bersaglio di ogni carattere, calcolate una
-        # sola volta: la frase intera determina la scala (non cambia mentre
-        # le lettere si assestano)
-        scala = 2.0 * dimensione_testo
+        # sola volta: la scala e' derivata sia dall'altezza che dalla
+        # larghezza disponibili (non un valore fisso in pixel), cosi' una
+        # frase corta riempie davvero lo schermo invece di restare piccola
         spessore_testo = max(2, spessore + 1)
-        larghezza_target = raggio_x * 1.9
-        (tw_f, th_f), _ = cv2.getTextSize(frase, font, scala, spessore_testo)
-        if tw_f > 0:
-            scala *= min(1.0, larghezza_target / tw_f)
+        (tw_rif, th_rif), _ = cv2.getTextSize(frase, font, 1.0, spessore_testo)
+        altezza_target = h * 0.22 * dimensione_testo
+        larghezza_target = w * 0.85 * dimensione_testo
+        scala = min(altezza_target / max(th_rif, 1), larghezza_target / max(tw_rif, 1))
         (tw_f, th_f), _ = cv2.getTextSize(frase, font, scala, spessore_testo)
         x0 = cx - tw_f / 2
         y0 = cy + th_f / 2
@@ -685,12 +685,18 @@ def disegna_iscrizione(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, col
             (w_prefisso, _), _ = cv2.getTextSize(frase[:k], font, scala, spessore_testo)
             posizioni_target.append(np.array([x0 + w_prefisso, y0]))
 
-        # tempi di blocco: un carattere per battito se ce ne sono abbastanza,
-        # altrimenti distribuiti uniformemente su tutta la durata del brano
+        # tempi di blocco: se ci sono abbastanza battiti, ne sceglie n_car
+        # distribuiti su TUTTA la sequenza rilevata (non i primi n_car in
+        # assoluto, che finirebbero per completare la frase troppo presto
+        # se il brano ha un battito frequente) — cosi' l'ultimo carattere
+        # si blocca vicino all'ultimo battito rilevato, verso la fine del
+        # brano. Altrimenti distribuisce i caratteri uniformemente sull'
+        # intera durata (fallback per brani senza battiti riconoscibili)
         battiti = feat["battiti_video"]
         lock_frames = np.zeros(n_car, dtype=np.int32)
         if len(battiti) >= n_car:
-            lock_frames[:] = battiti[:n_car]
+            indici = np.linspace(0, len(battiti) - 1, n_car).astype(int)
+            lock_frames[:] = battiti[indici]
         else:
             for k in range(n_car):
                 lock_frames[k] = int(round((k + 1) / n_car * (n_frames_tot - 1)))
@@ -1011,7 +1017,7 @@ def main():
         colA, colB, colC = st.columns(3)
         with colA:
             dimensione_testo = st.slider(
-                "Dimensione testo :: Text size", 0.5, 2.0, 1.0, 0.1
+                "Dimensione testo :: Text size", 0.5, 3.0, 1.0, 0.1
             )
         with colB:
             nomi_font = {
