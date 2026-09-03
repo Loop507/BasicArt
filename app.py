@@ -21,12 +21,14 @@ Loop507 protocol:
 """
 
 import os
+import functools
 import tempfile
 import numpy as np
 import cv2
 import streamlit as st
 import librosa
 from moviepy import VideoFileClip, AudioFileClip
+from PIL import Image, ImageDraw, ImageFont
 
 # ----------------------------------------------------------------------
 # CONFIG
@@ -41,6 +43,36 @@ RISOLUZIONI = {
 }
 
 FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)"]
+
+# font veri (TTF) per "Iscrizione" — cartella "fonts/" accanto a questo script.
+# Se mancante, l'app ripiega automaticamente sui font Hershey di OpenCV
+# (piu' grezzi ma sempre disponibili, nessuna dipendenza esterna)
+_CARTELLA_FONT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+_FONT_TTF = {
+    0: "GeistMono-Bold.ttf",
+    1: "BigShoulders-Bold.ttf",
+    2: "IBMPlexSerif-Bold.ttf",
+    3: "Boldonse-Regular.ttf",
+    4: "EricaOne-Regular.ttf",
+}
+_FONT_TTF_NOMI = {
+    0: "Geist Mono (tecnico)", 1: "Big Shoulders (bold display)",
+    2: "IBM Plex Serif (elegante)", 3: "Boldonse (grafico/pesante)",
+    4: "Erica One (rotondo)",
+}
+
+
+@functools.lru_cache(maxsize=32)
+def _carica_font_ttf(font_scelto, dimensione_px):
+    """Carica un font TTF alla dimensione richiesta, con cache (evita di
+    ricaricare il file da disco ad ogni frame). Torna None se il file non
+    e' disponibile, cosi' il chiamante puo' ripiegare su OpenCV/Hershey."""
+    nome_file = _FONT_TTF.get(font_scelto, _FONT_TTF[0])
+    percorso = os.path.join(_CARTELLA_FONT, nome_file)
+    try:
+        return ImageFont.truetype(percorso, max(8, int(dimensione_px)))
+    except Exception:
+        return None
 
 st.set_page_config(page_title="BasicArt // Loop507", layout="centered")
 
@@ -636,113 +668,204 @@ _FONT_ISCRIZIONE = {
 }
 
 
+def _punti_campione_lettera_pil(font_pil, carattere, n_punti):
+    """Campiona n_punti posizioni (relative all'origine di disegno) sui
+    pixel "inchiostrati" di un carattere renderizzato con un font PIL —
+    usati per l'effetto particellare: le particelle convergono su questi
+    punti per "assemblare" la lettera invece di limitarsi a farla scivolare
+    in posizione."""
+    try:
+        bbox = font_pil.getbbox(carattere)
+    except Exception:
+        bbox = (0, 0, 20, 20)
+    lb, tb, rb, bb = bbox
+    larg = max(4, rb - lb + 4)
+    alt = max(4, bb - tb + 4)
+    img = Image.new("L", (larg, alt), 0)
+    ImageDraw.Draw(img).text((-lb + 2, -tb + 2), carattere, font=font_pil, fill=255)
+    arr = np.array(img)
+    ys, xs = np.where(arr > 80)
+    rng_locale = np.random.default_rng(hash(carattere) % (2**31))
+    if len(xs) == 0:
+        return np.zeros((n_punti, 2)), (-lb + 2, -tb + 2)
+    if len(xs) >= n_punti:
+        idx = rng_locale.choice(len(xs), size=n_punti, replace=False)
+        pts = np.stack([xs[idx], ys[idx]], axis=1).astype(np.float64)
+    else:
+        idx = rng_locale.integers(0, len(xs), size=n_punti)
+        pts = np.stack([xs[idx], ys[idx]], axis=1).astype(np.float64)
+        pts += rng_locale.uniform(-1, 1, size=pts.shape)
+    pts -= np.array([-lb + 2, -tb + 2])   # relativi all'origine di disegno del testo
+    return pts, (-lb + 2, -tb + 2)
+
+
 def disegna_iscrizione(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
                         colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
                         dimensione_testo=1.0, font_scelto=0, lettere_extra=40):
-    """La frase si materializza da uno sciame di lettere casuali che vagano
-    per lo schermo — stile "decrittazione": ogni lettera del bersaglio vaga
-    liberamente mostrando caratteri casuali finche' non arriva il suo turno,
-    poi scivola dolcemente nella posizione finale e si blocca sulla lettera
-    corretta. Lettere decorative extra continuano a vagare sullo sfondo
-    senza mai bloccarsi, per riempire lo schermo. I tempi di blocco sono
-    calcolati per completare SEMPRE la frase entro la fine del brano: se ci
-    sono abbastanza battiti rilevati li usa (un carattere per battito),
-    altrimenti distribuisce i caratteri in modo uniforme su tutta la durata
-    — cosi' anche un brano breve con una frase corta arriva sempre a
-    completarsi. Reinterpretazione libera (non copia) della texture a
+    """Una o piu' frasi (separate da a-capo) si materializzano in sequenza
+    da uno sciame di particelle che convergono per "assemblare" ogni
+    lettera (stile decrittazione/costruzione), restano visibili per un
+    momento, poi (se non e' l'ultima) si disperdono di nuovo in particelle
+    prima che inizi la frase successiva. Font veri (TTF) quando disponibili
+    in una cartella "fonts/" accanto allo script, altrimenti ripiega sui
+    font Hershey di OpenCV. Con una sola frase, i tempi di comparsa usano i
+    battiti reali del brano distribuiti su tutta la durata; con piu' frasi,
+    il tempo totale viene diviso fra le frasi in proporzione alla loro
+    lunghezza. Reinterpretazione libera (non copia) della texture a
     caratteri di un pattern C64 BASIC V2 mostrato come riferimento."""
     if not frase:
         return canvas
+    elenco_frasi = [f.strip() for f in frase.split("\n") if f.strip()]
+    if not elenco_frasi:
+        return canvas
 
     h, w = canvas.shape[:2]
-    font = _FONT_ISCRIZIONE.get(font_scelto, cv2.FONT_HERSHEY_SIMPLEX)
+    n_frames_tot = feat["n_frames"]
     colore = _colore_miscelato(feat, i, colore_bassi, colore_medi, colore_alti)
     _fattore, _k1, _k2, _k_loto, _onset, intensita, _velocita = _parametri_da_audio(
         feat, i, t_frame, fps, reattivita
     )
-    n_car = len(frase)
-    n_frames_tot = feat["n_frames"]
 
     if stato is None:
         stato = {}
 
-    if "isc_lock_frames" not in stato:
-        # dimensione e posizione bersaglio di ogni carattere, calcolate una
-        # sola volta: la scala e' derivata sia dall'altezza che dalla
-        # larghezza disponibili (non un valore fisso in pixel), cosi' una
-        # frase corta riempie davvero lo schermo invece di restare piccola
-        spessore_testo = max(2, spessore + 1)
-        (tw_rif, th_rif), _ = cv2.getTextSize(frase, font, 1.0, spessore_testo)
-        altezza_target = h * 0.22 * dimensione_testo
-        larghezza_target = w * 0.85 * dimensione_testo
-        scala = min(altezza_target / max(th_rif, 1), larghezza_target / max(tw_rif, 1))
-        (tw_f, th_f), _ = cv2.getTextSize(frase, font, scala, spessore_testo)
-        x0 = cx - tw_f / 2
-        y0 = cy + th_f / 2
+    if "isc_confini" not in stato:
+        pesi = np.array([max(1, len(f)) for f in elenco_frasi], dtype=np.float64)
+        proporzioni = pesi / pesi.sum()
+        durate = np.maximum(1, np.round(proporzioni * n_frames_tot)).astype(np.int64)
+        durate[-1] = n_frames_tot - durate[:-1].sum()
+        stato["isc_confini"] = np.concatenate([[0], np.cumsum(durate)])
+        stato["isc_frasi"] = elenco_frasi
+        stato["isc_fase_idx"] = -1
 
-        posizioni_target = []
-        for k in range(n_car):
-            (w_prefisso, _), _ = cv2.getTextSize(frase[:k], font, scala, spessore_testo)
-            posizioni_target.append(np.array([x0 + w_prefisso, y0]))
+    confini = stato["isc_confini"]
+    frasi = stato["isc_frasi"]
+    n_frasi = len(frasi)
+    idx_frase = int(np.searchsorted(confini, i, side="right") - 1)
+    idx_frase = min(max(idx_frase, 0), n_frasi - 1)
+    inizio_seg = int(confini[idx_frase])
+    fine_seg = int(confini[idx_frase + 1])
+    durata_seg = max(1, fine_seg - inizio_seg)
 
-        # tempi di blocco: se ci sono abbastanza battiti, ne sceglie n_car
-        # distribuiti su TUTTA la sequenza rilevata (non i primi n_car in
-        # assoluto, che finirebbero per completare la frase troppo presto
-        # se il brano ha un battito frequente) — cosi' l'ultimo carattere
-        # si blocca vicino all'ultimo battito rilevato, verso la fine del
-        # brano. Altrimenti distribuisce i caratteri uniformemente sull'
-        # intera durata (fallback per brani senza battiti riconoscibili)
-        battiti = feat["battiti_video"]
-        lock_frames = np.zeros(n_car, dtype=np.int32)
-        if len(battiti) >= n_car:
-            indici = np.linspace(0, len(battiti) - 1, n_car).astype(int)
-            lock_frames[:] = battiti[indici]
-        else:
+    fine_materializza = inizio_seg + int(durata_seg * 0.55)
+    fine_hold = inizio_seg + (durata_seg if idx_frase == n_frasi - 1 else int(durata_seg * 0.85))
+
+    rng_glob = np.random.default_rng(507 + idx_frase)
+    n_particelle = 10
+
+    if stato["isc_fase_idx"] != idx_frase:
+        frase_corrente = frasi[idx_frase]
+        n_car = len(frase_corrente)
+
+        dimensione_px = max(10, int(h * 0.20 * dimensione_testo))
+        font_pil = _carica_font_ttf(font_scelto, dimensione_px)
+        spessore_testo_cv = max(2, spessore + 1)
+        stroke_w = max(0, spessore - 1)
+        font_cv = _FONT_ISCRIZIONE.get(font_scelto, cv2.FONT_HERSHEY_SIMPLEX)
+
+        if font_pil is not None:
+            bbox_frase = font_pil.getbbox(frase_corrente)
+            tw_f = bbox_frase[2] - bbox_frase[0]
+            th_f = bbox_frase[3] - bbox_frase[1]
+            larghezza_max = w * 0.85 * dimensione_testo
+            if tw_f > larghezza_max and tw_f > 0:
+                dimensione_px = max(10, int(dimensione_px * larghezza_max / tw_f))
+                font_pil = _carica_font_ttf(font_scelto, dimensione_px)
+                bbox_frase = font_pil.getbbox(frase_corrente)
+                tw_f = bbox_frase[2] - bbox_frase[0]
+                th_f = bbox_frase[3] - bbox_frase[1]
+            x0 = cx - tw_f / 2 - bbox_frase[0]
+            y0 = cy - th_f / 2 - bbox_frase[1]
+            posizioni_target = []
             for k in range(n_car):
-                lock_frames[k] = int(round((k + 1) / n_car * (n_frames_tot - 1)))
+                bbox_pre = font_pil.getbbox(frase_corrente[:k]) if k > 0 else (0, 0, 0, 0)
+                posizioni_target.append(np.array([x0 + bbox_pre[2], y0]))
+        else:
+            (tw_rif, th_rif), _ = cv2.getTextSize(frase_corrente, font_cv, 1.0, spessore_testo_cv)
+            altezza_target = h * 0.22 * dimensione_testo
+            larghezza_target = w * 0.85 * dimensione_testo
+            scala_cv = min(altezza_target / max(th_rif, 1), larghezza_target / max(tw_rif, 1))
+            (tw_f, th_f), _ = cv2.getTextSize(frase_corrente, font_cv, scala_cv, spessore_testo_cv)
+            x0 = cx - tw_f / 2
+            y0 = cy + th_f / 2
+            posizioni_target = []
+            for k in range(n_car):
+                (w_pre, _), _ = cv2.getTextSize(frase_corrente[:k], font_cv, scala_cv, spessore_testo_cv)
+                posizioni_target.append(np.array([x0 + w_pre, y0]))
+            stato["isc_scala_cv"] = scala_cv
 
-        rng = np.random.default_rng(507)
+        if n_frasi == 1:
+            battiti = feat["battiti_video"]
+            lock_frames = np.zeros(n_car, dtype=np.int32)
+            if len(battiti) >= n_car:
+                indici = np.linspace(0, len(battiti) - 1, n_car).astype(int)
+                lock_frames[:] = battiti[indici]
+            else:
+                for k in range(n_car):
+                    lock_frames[k] = int(round((k + 1) / n_car * (n_frames_tot - 1)))
+        else:
+            lock_frames = np.array([
+                inizio_seg + int(round((k + 1) / n_car * (fine_materializza - inizio_seg)))
+                for k in range(n_car)
+            ], dtype=np.int32)
+
         margine = 40
         pos_correnti = np.array([
-            [rng.uniform(margine, max(margine + 1, w - margine)),
-             rng.uniform(margine, max(margine + 1, h - margine))]
+            [rng_glob.uniform(margine, max(margine + 1, w - margine)),
+             rng_glob.uniform(margine, max(margine + 1, h - margine))]
             for _ in range(n_car)
         ])
-        vel = rng.uniform(-1.6, 1.6, size=(n_car, 2))
+        vel = rng_glob.uniform(-1.6, 1.6, size=(n_car, 2))
 
         n_extra = max(0, int(lettere_extra))
-        pos_extra = np.array([[rng.uniform(0, w), rng.uniform(0, h)] for _ in range(n_extra)]) \
+        pos_extra = np.array([[rng_glob.uniform(0, w), rng_glob.uniform(0, h)] for _ in range(n_extra)]) \
             if n_extra > 0 else np.zeros((0, 2))
-        vel_extra = rng.uniform(-1.3, 1.3, size=(n_extra, 2)) if n_extra > 0 else np.zeros((0, 2))
+        vel_extra = rng_glob.uniform(-1.3, 1.3, size=(n_extra, 2)) if n_extra > 0 else np.zeros((0, 2))
 
-        stato["isc_font"] = font
-        stato["isc_scala"] = scala
-        stato["isc_spessore_testo"] = spessore_testo
+        particelle_offset = []
+        for ch in frase_corrente:
+            if font_pil is not None:
+                pts, _ = _punti_campione_lettera_pil(font_pil, ch, n_particelle)
+            else:
+                pts = np.zeros((n_particelle, 2))
+            particelle_offset.append(pts)
+        jitter_iniziale = [rng_glob.uniform(-10, 10, size=(n_particelle, 2)) for _ in range(n_car)]
+
+        stato["isc_font_pil"] = font_pil
+        stato["isc_font_cv"] = font_cv
+        stato["isc_font_dim"] = dimensione_px
+        stato["isc_stroke_w"] = stroke_w
+        stato["isc_spessore_cv"] = spessore_testo_cv
+        stato["isc_frase_corrente"] = frase_corrente
         stato["isc_pos_target"] = posizioni_target
         stato["isc_lock_frames"] = lock_frames
         stato["isc_pos"] = pos_correnti
+        stato["isc_pos_congelata"] = [None] * n_car
         stato["isc_vel"] = vel
         stato["isc_bloccato"] = np.zeros(n_car, dtype=bool)
-        stato["isc_lettera"] = [rng.choice(list(_ALFABETO_ISCRIZIONE)) for _ in range(n_car)]
+        stato["isc_disperso"] = np.zeros(n_car, dtype=bool)
+        stato["isc_vel_dispersione"] = [None] * n_car
         stato["isc_pos_extra"] = pos_extra
         stato["isc_vel_extra"] = vel_extra
-        stato["isc_lettera_extra"] = [rng.choice(list(_ALFABETO_ISCRIZIONE)) for _ in range(n_extra)]
-        stato["isc_rng"] = rng
+        stato["isc_lettera_extra"] = [rng_glob.choice(list(_ALFABETO_ISCRIZIONE)) for _ in range(n_extra)]
+        stato["isc_particelle_offset"] = particelle_offset
+        stato["isc_jitter_iniziale"] = jitter_iniziale
+        stato["isc_rng"] = rng_glob
+        stato["isc_fine_materializza"] = fine_materializza
+        stato["isc_fine_hold"] = fine_hold
+        stato["isc_fine_seg"] = fine_seg
 
-        # se l'anteprima parte da un frame gia' avanzato nel brano, i
-        # caratteri il cui turno e' gia' passato vanno mostrati subito
-        # bloccati, non fatti ripartire dal vagabondaggio
         for k in range(n_car):
             if lock_frames[k] <= i:
                 stato["isc_bloccato"][k] = True
                 stato["isc_pos"][k] = posizioni_target[k]
-                stato["isc_lettera"][k] = frase[k]
 
-    font = stato["isc_font"]
-    scala = stato["isc_scala"]
-    spessore_testo = stato["isc_spessore_testo"]
+        stato["isc_fase_idx"] = idx_frase
+
+    # --- variabili di comodo dallo stato corrente ---
+    n_car = len(stato["isc_frase_corrente"])
     rng = stato["isc_rng"]
-    transizione = max(1, int(0.6 * fps))
+    transizione = max(1, int(0.5 * fps))
     margine = 20
 
     def rimbalza(pos, vel):
@@ -750,24 +873,29 @@ def disegna_iscrizione(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, col
             if pos[ax] < margine or pos[ax] > lim - margine:
                 vel[ax] *= -1
 
+    fine_hold = stato["isc_fine_hold"]
+    fine_seg = stato["isc_fine_seg"]
+
     for k in range(n_car):
+        lf = stato["isc_lock_frames"][k]
+        if stato["isc_disperso"][k]:
+            continue
+        if i >= fine_hold and stato["isc_bloccato"][k]:
+            # inizio dispersione: la lettera torna particelle che si allontanano
+            if stato["isc_vel_dispersione"][k] is None:
+                stato["isc_vel_dispersione"][k] = rng.uniform(-3.5, 3.5, size=(len(stato["isc_particelle_offset"][k]), 2))
+            continue
         if stato["isc_bloccato"][k]:
             continue
-        lf = stato["isc_lock_frames"][k]
         if i >= lf:
             stato["isc_bloccato"][k] = True
             stato["isc_pos"][k] = stato["isc_pos_target"][k]
-            stato["isc_lettera"][k] = frase[k]
         elif i >= lf - transizione:
-            t_rel = (i - (lf - transizione)) / transizione
-            stato["isc_pos"][k] = (1 - t_rel) * stato["isc_pos"][k] + t_rel * stato["isc_pos_target"][k]
-            if i % 3 == 0:
-                stato["isc_lettera"][k] = rng.choice(list(_ALFABETO_ISCRIZIONE))
+            if stato["isc_pos_congelata"][k] is None:
+                stato["isc_pos_congelata"][k] = stato["isc_pos"][k].copy()
         else:
             rimbalza(stato["isc_pos"][k], stato["isc_vel"][k])
             stato["isc_pos"][k] = stato["isc_pos"][k] + stato["isc_vel"][k]
-            if i % 4 == 0:
-                stato["isc_lettera"][k] = rng.choice(list(_ALFABETO_ISCRIZIONE))
 
     for j in range(len(stato["isc_pos_extra"])):
         rimbalza(stato["isc_pos_extra"][j], stato["isc_vel_extra"][j])
@@ -775,17 +903,83 @@ def disegna_iscrizione(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, col
         if i % 5 == 0:
             stato["isc_lettera_extra"][j] = rng.choice(list(_ALFABETO_ISCRIZIONE))
 
-    colore_extra = tuple(min(int(c * intensita * 0.35), 255) for c in colore)
+    # --- disegno: passa a PIL se il font TTF e' disponibile ---
+    font_pil = stato["isc_font_pil"]
+    usa_pil = font_pil is not None
+
+    if usa_pil:
+        pil_img = Image.fromarray(cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB))
+        draw = ImageDraw.Draw(pil_img)
+    colore_rgb = (int(colore[2]), int(colore[1]), int(colore[0]))   # BGR -> RGB per PIL
+
+    # lettere decorative di sfondo (sempre disperse/vaganti)
+    colore_extra = tuple(max(0, min(255, int(c * intensita * 0.35))) for c in colore_rgb)
+    dim_extra = max(8, int(stato["isc_font_dim"] * 0.5))
+    font_extra_pil = _carica_font_ttf(font_scelto, dim_extra) if usa_pil else None
     for j in range(len(stato["isc_pos_extra"])):
         x, y = stato["isc_pos_extra"][j]
-        cv2.putText(canvas, stato["isc_lettera_extra"][j], (int(x), int(y)), font,
-                    scala * 0.55, colore_extra, max(1, spessore_testo - 1), cv2.LINE_AA)
+        if usa_pil and font_extra_pil is not None:
+            draw.text((float(x), float(y)), stato["isc_lettera_extra"][j], font=font_extra_pil, fill=colore_extra)
+        else:
+            cv2.putText(canvas, stato["isc_lettera_extra"][j], (int(x), int(y)), stato["isc_font_cv"],
+                        0.5, tuple(reversed(colore_extra)), 1, cv2.LINE_AA)
 
-    colore_int = tuple(min(int(c * intensita), 255) for c in colore)
+    colore_pieno = tuple(max(0, min(255, int(c * intensita))) for c in colore_rgb)
     for k in range(n_car):
-        x, y = stato["isc_pos"][k]
-        cv2.putText(canvas, stato["isc_lettera"][k], (int(x), int(y)), font,
-                    scala, colore_int, spessore_testo, cv2.LINE_AA)
+        lf = stato["isc_lock_frames"][k]
+        pos_target = stato["isc_pos_target"][k]
+        offset_particelle = stato["isc_particelle_offset"][k]
+
+        if stato["isc_disperso"][k] or (i >= fine_hold and stato["isc_bloccato"][k]):
+            stato["isc_disperso"][k] = True
+            t_disp = np.clip((i - fine_hold) / max(1, fine_seg - fine_hold), 0.0, 1.0)
+            alpha = max(0.0, 1.0 - t_disp)
+            if alpha <= 0.01:
+                continue
+            vel_disp = stato["isc_vel_dispersione"][k]
+            col = tuple(int(c * alpha) for c in colore_pieno)
+            for p in range(len(offset_particelle)):
+                px = pos_target[0] + offset_particelle[p][0] + vel_disp[p][0] * t_disp * 20
+                py = pos_target[1] + offset_particelle[p][1] + vel_disp[p][1] * t_disp * 20
+                if usa_pil:
+                    draw.ellipse([px - 2, py - 2, px + 2, py + 2], fill=col)
+                else:
+                    cv2.circle(canvas, (int(px), int(py)), 2, tuple(reversed(col)), -1)
+            continue
+
+        if stato["isc_bloccato"][k]:
+            ch = stato["isc_frase_corrente"][k]
+            if usa_pil:
+                draw.text((float(pos_target[0]), float(pos_target[1])), ch, font=font_pil,
+                          fill=colore_pieno, stroke_width=stato["isc_stroke_w"], stroke_fill=colore_pieno)
+            else:
+                cv2.putText(canvas, ch, (int(pos_target[0]), int(pos_target[1])), stato["isc_font_cv"],
+                            stato["isc_scala_cv"], tuple(reversed(colore_pieno)), stato["isc_spessore_cv"], cv2.LINE_AA)
+        elif i >= lf - transizione:
+            t_rel = np.clip((i - (lf - transizione)) / transizione, 0.0, 1.0)
+            base = stato["isc_pos_congelata"][k] if stato["isc_pos_congelata"][k] is not None else stato["isc_pos"][k]
+            jitter = stato["isc_jitter_iniziale"][k]
+            for p in range(len(offset_particelle)):
+                ox = (1 - t_rel) * jitter[p][0] + t_rel * offset_particelle[p][0]
+                oy = (1 - t_rel) * jitter[p][1] + t_rel * offset_particelle[p][1]
+                px = (1 - t_rel) * base[0] + t_rel * pos_target[0] + ox
+                py = (1 - t_rel) * base[1] + t_rel * pos_target[1] + oy
+                if usa_pil:
+                    draw.ellipse([px - 2, py - 2, px + 2, py + 2], fill=colore_pieno)
+                else:
+                    cv2.circle(canvas, (int(px), int(py)), 2, tuple(reversed(colore_pieno)), -1)
+        else:
+            x, y = stato["isc_pos"][k]
+            jitter = stato["isc_jitter_iniziale"][k]
+            for p in range(len(offset_particelle)):
+                px, py = x + jitter[p][0], y + jitter[p][1]
+                if usa_pil:
+                    draw.ellipse([px - 2, py - 2, px + 2, py + 2], fill=colore_pieno)
+                else:
+                    cv2.circle(canvas, (int(px), int(py)), 2, tuple(reversed(colore_pieno)), -1)
+
+    if usa_pil:
+        canvas[:] = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
     return canvas
 
@@ -1005,12 +1199,12 @@ def main():
     font_scelto = 0
     lettere_extra = 40
     if forma == "Iscrizione (testo a tempo)":
-        frase = st.text_input(
-            "Frase da scrivere a tempo :: Phrase to write in time",
-            max_chars=60,
-            help="Le lettere si assestano nella posizione giusta seguendo i battiti del "
-                 "brano, completando sempre la frase entro la fine :: Letters settle into "
-                 "place following the track's beats, always completing by the end"
+        frase = st.text_area(
+            "Frasi da scrivere a tempo (una per riga) :: Phrases to write in time (one per line)",
+            max_chars=240, height=100,
+            help="Una frase per riga: compaiono in sequenza, il tempo totale si divide fra "
+                 "loro in proporzione alla lunghezza :: One phrase per line: they appear in "
+                 "sequence, total time is split between them proportionally to length"
         ).upper()
 
         st.caption("Controlli dedicati :: Dedicated controls — Iscrizione")
@@ -1021,8 +1215,9 @@ def main():
             )
         with colB:
             nomi_font = {
-                0: "Semplice :: Simple", 1: "Doppio :: Double", 2: "Triplo :: Triple",
-                3: "Complesso :: Complex", 4: "Stampatello :: Plain",
+                0: "Geist Mono (tecnico)", 1: "Big Shoulders (bold)",
+                2: "IBM Plex Serif (elegante)", 3: "Boldonse (pesante)",
+                4: "Erica One (rotondo)",
             }
             font_scelto = st.selectbox(
                 "Font", options=list(nomi_font.keys()), format_func=lambda k: nomi_font[k]
