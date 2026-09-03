@@ -4,3 +4,4 @@ opencv-python-headless>=4.13.0.92
 librosa>=1.0.0
 moviepy>=2.2.1
 soundfile>=0.12.1
+Pillow>=10.0.0
