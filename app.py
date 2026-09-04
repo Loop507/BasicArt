@@ -1278,7 +1278,7 @@ def main():
     if forma == "Iscrizione (testo a tempo)":
         frase = st.text_area(
             "Frasi da scrivere a tempo (una per riga) :: Phrases to write in time (one per line)",
-            max_chars=240, height=100,
+            max_chars=500, height=120,
             help="Una frase per riga: compaiono in sequenza, il tempo totale si divide fra "
                  "loro in proporzione alla lunghezza :: One phrase per line: they appear in "
                  "sequence, total time is split between them proportionally to length"
