@@ -320,7 +320,7 @@ def _parametri_da_audio(feat, i, t_frame, fps, reattivita=1.0):
 
 
 def disegna_ellisse(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
-                     colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="", dimensione_testo=1.0, font_scelto=0, lettere_extra=40):
+                     colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="", dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False):
     """Pattern cartesiano: x=f(t2), y=f(t1). Scala anisotropica (raggio_x/
     raggio_y separati) per riempire il fotogramma invece di restare confinato
     al centro — reinterpretazione mia rispetto al riferimento (che usava un
@@ -352,7 +352,7 @@ def disegna_ellisse(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore
 
 
 def disegna_loto(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
-                  colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="", dimensione_testo=1.0, font_scelto=0, lettere_extra=40):
+                  colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="", dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False):
     """Pattern polare: r=f(t2), a=f(t1), x=r*cos(a), y=r*sin(a).
     r e a condividono la stessa frequenza secondaria k (come nel BASIC
     originale) per mantenere la simmetria a petali. A differenza
@@ -403,7 +403,7 @@ def disegna_loto(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_ba
 
 
 def disegna_pulviscolo(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
-                        colore_alti, t1_arr, fps, reattivita=1.0, spessore=1, stato=None, frase="", dimensione_testo=1.0, font_scelto=0, lettere_extra=40):
+                        colore_alti, t1_arr, fps, reattivita=1.0, spessore=1, stato=None, frase="", dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False):
     """Struttura radicalmente diversa dalle altre due: una spirale di
     polvere che si espande dal centro verso il bordo (non ellissi chiuse
     ne' petali), pilotata dall'audio. Il numero di giri della spirale
@@ -454,7 +454,7 @@ def disegna_pulviscolo(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, col
 
 
 def disegna_graffio(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
-                     colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="", dimensione_testo=1.0, font_scelto=0, lettere_extra=40):
+                     colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="", dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False):
     """Random walk di segmenti brevi che vaga per il fotogramma con
     teletrasporto ai bordi (wrap-around) — ispirato a un terzo riferimento
     BASIC che usa RANDOM invece di funzioni trigonometriche. A differenza
@@ -503,7 +503,7 @@ def disegna_graffio(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore
 
 
 def disegna_sismografo(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
-                        colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="", dimensione_testo=1.0, font_scelto=0, lettere_extra=40):
+                        colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="", dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False):
     """Spectrum analyzer: barre verticali FERME in posizione orizzontale
     (non scorrono lateralmente) — ogni barra rappresenta una banda di
     frequenza log-spaziata (come un equalizzatore reale, precalcolata una
@@ -549,7 +549,7 @@ def disegna_sismografo(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, col
 
 
 def disegna_julia(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
-                   colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="", dimensione_testo=1.0, font_scelto=0, lettere_extra=40):
+                   colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="", dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False):
     """Insieme di Julia (frattale nel piano complesso: z=z^2+c iterato per
     ogni punto), animato facendo ruotare la costante c nel tempo in base
     all'audio — piccole variazioni di c producono forme del frattale
@@ -609,7 +609,7 @@ def disegna_julia(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_b
 
 
 def disegna_aritmia(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
-                     colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="", dimensione_testo=1.0, font_scelto=0, lettere_extra=40):
+                     colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="", dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False):
     """Variante di Sismografo: STESSO motore (spettro di frequenza fisso,
     140 barre in posizione orizzontale FERMA, nessuno storico che scorre),
     ma ogni barra ha una direzione (su o giu') decisa UNA SOLA VOLTA
@@ -701,18 +701,21 @@ def _punti_campione_lettera_pil(font_pil, carattere, n_punti):
 
 def disegna_iscrizione(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
                         colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
-                        dimensione_testo=1.0, font_scelto=0, lettere_extra=40):
+                        dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False):
     """Una o piu' frasi (separate da a-capo) si materializzano in sequenza
     da uno sciame di particelle che convergono per "assemblare" ogni
-    lettera (stile decrittazione/costruzione), restano visibili per un
-    momento, poi (se non e' l'ultima) si disperdono di nuovo in particelle
-    prima che inizi la frase successiva. Font veri (TTF) quando disponibili
-    in una cartella "fonts/" accanto allo script, altrimenti ripiega sui
-    font Hershey di OpenCV. Con una sola frase, i tempi di comparsa usano i
-    battiti reali del brano distribuiti su tutta la durata; con piu' frasi,
-    il tempo totale viene diviso fra le frasi in proporzione alla loro
-    lunghezza. Reinterpretazione libera (non copia) della texture a
-    caratteri di un pattern C64 BASIC V2 mostrato come riferimento."""
+    lettera (stile decrittazione/costruzione). Il completamento e' sempre
+    calcolato per finire con un margine di sicurezza (3s) prima della fine
+    del brano, non esattamente sull'ultimo frame. Con 'sovrapponi' attivo,
+    le frasi gia' completate restano a schermo (impilate verticalmente)
+    invece di dissolversi, cosi' alla fine si vedono tutte insieme; altrimenti
+    ogni frase (tranne l'ultima) si disperde di nuovo in particelle prima
+    che inizi la successiva. Font veri (TTF) quando disponibili in una
+    cartella "fonts/" accanto allo script, altrimenti ripiega sui font
+    Hershey di OpenCV. Con una sola frase, i tempi di comparsa usano i
+    battiti reali del brano; con piu' frasi il tempo si divide fra loro in
+    proporzione alla lunghezza. Reinterpretazione libera (non copia) della
+    texture a caratteri di un pattern C64 BASIC V2 mostrato come riferimento."""
     if not frase:
         return canvas
     elenco_frasi = [f.strip() for f in frase.split("\n") if f.strip()]
@@ -721,6 +724,8 @@ def disegna_iscrizione(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, col
 
     h, w = canvas.shape[:2]
     n_frames_tot = feat["n_frames"]
+    margine_finale = int(3 * fps)
+    n_frames_utili = max(fps, n_frames_tot - margine_finale)
     colore = _colore_miscelato(feat, i, colore_bassi, colore_medi, colore_alti)
     _fattore, _k1, _k2, _k_loto, _onset, intensita, _velocita = _parametri_da_audio(
         feat, i, t_frame, fps, reattivita
@@ -730,13 +735,32 @@ def disegna_iscrizione(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, col
         stato = {}
 
     if "isc_confini" not in stato:
+        n_frasi_tot = len(elenco_frasi)
         pesi = np.array([max(1, len(f)) for f in elenco_frasi], dtype=np.float64)
         proporzioni = pesi / pesi.sum()
-        durate = np.maximum(1, np.round(proporzioni * n_frames_tot)).astype(np.int64)
-        durate[-1] = n_frames_tot - durate[:-1].sum()
-        stato["isc_confini"] = np.concatenate([[0], np.cumsum(durate)])
+        durate = np.maximum(1, np.round(proporzioni * n_frames_utili)).astype(np.int64)
+        durate[-1] = n_frames_utili - durate[:-1].sum()
+        confini = np.concatenate([[0], np.cumsum(durate)])
+        confini[-1] = n_frames_tot   # l'ultimo segmento si estende fino alla vera fine
+        stato["isc_confini"] = confini
         stato["isc_frasi"] = elenco_frasi
         stato["isc_fase_idx"] = -1
+        stato["isc_archivio"] = []       # frasi gia' completate, in modalita' "sovrapponi"
+        stato["isc_archiviati"] = set()
+
+        if sovrapponi:
+            # dimensione condivisa fra tutte le righe (non una per frase),
+            # cosi' le righe impilate hanno lo stesso corpo tipografico
+            dim_base = max(10, int((h * 0.85 / max(1, n_frasi_tot)) * dimensione_testo))
+            font_prova = _carica_font_ttf(font_scelto, dim_base)
+            frase_piu_lunga = max(elenco_frasi, key=len)
+            if font_prova is not None:
+                bbox = font_prova.getbbox(frase_piu_lunga)
+                tw = bbox[2] - bbox[0]
+                larghezza_max = w * 0.9 * dimensione_testo
+                if tw > larghezza_max and tw > 0:
+                    dim_base = max(10, int(dim_base * larghezza_max / tw))
+            stato["isc_dim_condivisa"] = dim_base
 
     confini = stato["isc_confini"]
     frasi = stato["isc_frasi"]
@@ -744,11 +768,21 @@ def disegna_iscrizione(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, col
     idx_frase = int(np.searchsorted(confini, i, side="right") - 1)
     idx_frase = min(max(idx_frase, 0), n_frasi - 1)
     inizio_seg = int(confini[idx_frase])
-    fine_seg = int(confini[idx_frase + 1])
-    durata_seg = max(1, fine_seg - inizio_seg)
+    fine_seg_reale = int(confini[idx_frase + 1])
+    # la finestra di materializzazione/hold si basa sulla durata "utile"
+    # (prima del margine finale), non su fine_seg_reale che puo' essere
+    # allungato per coprire la coda di sicurezza
+    fine_seg_utile = min(fine_seg_reale, n_frames_utili) if idx_frase == n_frasi - 1 else fine_seg_reale
+    durata_seg = max(1, fine_seg_utile - inizio_seg)
 
     fine_materializza = inizio_seg + int(durata_seg * 0.55)
-    fine_hold = inizio_seg + (durata_seg if idx_frase == n_frasi - 1 else int(durata_seg * 0.85))
+    if sovrapponi:
+        fine_hold = fine_seg_reale   # non dissolve mai in modalita' "sovrapponi"
+    else:
+        # l'ultima frase non dissolve mai: la sua "hold" si estende fino alla
+        # vera fine del segmento (che copre anche il margine di sicurezza),
+        # non solo fino alla durata "utile" usata per i calcoli proporzionali
+        fine_hold = fine_seg_reale if idx_frase == n_frasi - 1 else inizio_seg + int(durata_seg * 0.85)
 
     rng_glob = np.random.default_rng(507 + idx_frase)
     n_particelle = 10
@@ -757,37 +791,50 @@ def disegna_iscrizione(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, col
         frase_corrente = frasi[idx_frase]
         n_car = len(frase_corrente)
 
-        dimensione_px = max(10, int(h * 0.20 * dimensione_testo))
+        if sovrapponi:
+            dimensione_px = stato["isc_dim_condivisa"]
+        else:
+            dimensione_px = max(10, int(h * 0.20 * dimensione_testo))
         font_pil = _carica_font_ttf(font_scelto, dimensione_px)
         spessore_testo_cv = max(2, spessore + 1)
         stroke_w = max(0, spessore - 1)
         font_cv = _FONT_ISCRIZIONE.get(font_scelto, cv2.FONT_HERSHEY_SIMPLEX)
 
+        # offset verticale di riga, per la modalita' "sovrapponi" (le frasi
+        # si dispongono impilate invece che tutte al centro)
+        if sovrapponi:
+            altezza_riga = dimensione_px * 1.4
+            offset_y = (idx_frase - (n_frasi - 1) / 2.0) * altezza_riga
+        else:
+            offset_y = 0.0
+        centro_riga = cy + offset_y
+
         if font_pil is not None:
             bbox_frase = font_pil.getbbox(frase_corrente)
             tw_f = bbox_frase[2] - bbox_frase[0]
             th_f = bbox_frase[3] - bbox_frase[1]
-            larghezza_max = w * 0.85 * dimensione_testo
-            if tw_f > larghezza_max and tw_f > 0:
-                dimensione_px = max(10, int(dimensione_px * larghezza_max / tw_f))
-                font_pil = _carica_font_ttf(font_scelto, dimensione_px)
-                bbox_frase = font_pil.getbbox(frase_corrente)
-                tw_f = bbox_frase[2] - bbox_frase[0]
-                th_f = bbox_frase[3] - bbox_frase[1]
+            if not sovrapponi:
+                larghezza_max = w * 0.85 * dimensione_testo
+                if tw_f > larghezza_max and tw_f > 0:
+                    dimensione_px = max(10, int(dimensione_px * larghezza_max / tw_f))
+                    font_pil = _carica_font_ttf(font_scelto, dimensione_px)
+                    bbox_frase = font_pil.getbbox(frase_corrente)
+                    tw_f = bbox_frase[2] - bbox_frase[0]
+                    th_f = bbox_frase[3] - bbox_frase[1]
             x0 = cx - tw_f / 2 - bbox_frase[0]
-            y0 = cy - th_f / 2 - bbox_frase[1]
+            y0 = centro_riga - th_f / 2 - bbox_frase[1]
             posizioni_target = []
             for k in range(n_car):
                 bbox_pre = font_pil.getbbox(frase_corrente[:k]) if k > 0 else (0, 0, 0, 0)
                 posizioni_target.append(np.array([x0 + bbox_pre[2], y0]))
         else:
             (tw_rif, th_rif), _ = cv2.getTextSize(frase_corrente, font_cv, 1.0, spessore_testo_cv)
-            altezza_target = h * 0.22 * dimensione_testo
+            altezza_target = h * 0.22 * dimensione_testo if not sovrapponi else dimensione_px
             larghezza_target = w * 0.85 * dimensione_testo
             scala_cv = min(altezza_target / max(th_rif, 1), larghezza_target / max(tw_rif, 1))
             (tw_f, th_f), _ = cv2.getTextSize(frase_corrente, font_cv, scala_cv, spessore_testo_cv)
             x0 = cx - tw_f / 2
-            y0 = cy + th_f / 2
+            y0 = centro_riga + th_f / 2
             posizioni_target = []
             for k in range(n_car):
                 (w_pre, _), _ = cv2.getTextSize(frase_corrente[:k], font_cv, scala_cv, spessore_testo_cv)
@@ -796,13 +843,14 @@ def disegna_iscrizione(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, col
 
         if n_frasi == 1:
             battiti = feat["battiti_video"]
+            battiti = battiti[battiti <= n_frames_utili]
             lock_frames = np.zeros(n_car, dtype=np.int32)
             if len(battiti) >= n_car:
                 indici = np.linspace(0, len(battiti) - 1, n_car).astype(int)
                 lock_frames[:] = battiti[indici]
             else:
                 for k in range(n_car):
-                    lock_frames[k] = int(round((k + 1) / n_car * (n_frames_tot - 1)))
+                    lock_frames[k] = int(round((k + 1) / n_car * (n_frames_utili - 1)))
         else:
             lock_frames = np.array([
                 inizio_seg + int(round((k + 1) / n_car * (fine_materializza - inizio_seg)))
@@ -853,7 +901,7 @@ def disegna_iscrizione(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, col
         stato["isc_rng"] = rng_glob
         stato["isc_fine_materializza"] = fine_materializza
         stato["isc_fine_hold"] = fine_hold
-        stato["isc_fine_seg"] = fine_seg
+        stato["isc_fine_seg"] = fine_seg_reale
 
         for k in range(n_car):
             if lock_frames[k] <= i:
@@ -880,8 +928,7 @@ def disegna_iscrizione(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, col
         lf = stato["isc_lock_frames"][k]
         if stato["isc_disperso"][k]:
             continue
-        if i >= fine_hold and stato["isc_bloccato"][k]:
-            # inizio dispersione: la lettera torna particelle che si allontanano
+        if i >= fine_hold and stato["isc_bloccato"][k] and not sovrapponi:
             if stato["isc_vel_dispersione"][k] is None:
                 stato["isc_vel_dispersione"][k] = rng.uniform(-3.5, 3.5, size=(len(stato["isc_particelle_offset"][k]), 2))
             continue
@@ -897,6 +944,22 @@ def disegna_iscrizione(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, col
             rimbalza(stato["isc_pos"][k], stato["isc_vel"][k])
             stato["isc_pos"][k] = stato["isc_pos"][k] + stato["isc_vel"][k]
 
+    # in modalita' "sovrapponi": una volta che tutti i caratteri di questa
+    # frase sono bloccati, la archiviamo (disegno statico ad ogni frame
+    # successivo, senza piu' bisogno di simularne il vagabondaggio)
+    if sovrapponi and idx_frase not in stato["isc_archiviati"] and stato["isc_bloccato"].all():
+        stato["isc_archivio"].append({
+            "testo": stato["isc_frase_corrente"],
+            "pos_target": [p.copy() for p in stato["isc_pos_target"]],
+            "font_pil": stato["isc_font_pil"],
+            "font_cv": stato["isc_font_cv"],
+            "font_dim": stato["isc_font_dim"],
+            "stroke_w": stato["isc_stroke_w"],
+            "scala_cv": stato.get("isc_scala_cv"),
+            "spessore_cv": stato["isc_spessore_cv"],
+        })
+        stato["isc_archiviati"].add(idx_frase)
+
     for j in range(len(stato["isc_pos_extra"])):
         rimbalza(stato["isc_pos_extra"][j], stato["isc_vel_extra"][j])
         stato["isc_pos_extra"][j] = stato["isc_pos_extra"][j] + stato["isc_vel_extra"][j]
@@ -911,6 +974,19 @@ def disegna_iscrizione(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, col
         pil_img = Image.fromarray(cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB))
         draw = ImageDraw.Draw(pil_img)
     colore_rgb = (int(colore[2]), int(colore[1]), int(colore[0]))   # BGR -> RGB per PIL
+    colore_pieno = tuple(max(0, min(255, int(c * intensita))) for c in colore_rgb)
+
+    # frasi gia' completate e archiviate (modalita' "sovrapponi"): disegno
+    # statico, sempre a piena intensita'
+    for voce in stato["isc_archivio"]:
+        for k, ch in enumerate(voce["testo"]):
+            px, py = voce["pos_target"][k]
+            if voce["font_pil"] is not None:
+                draw.text((float(px), float(py)), ch, font=voce["font_pil"],
+                          fill=colore_pieno, stroke_width=voce["stroke_w"], stroke_fill=colore_pieno)
+            else:
+                cv2.putText(canvas, ch, (int(px), int(py)), voce["font_cv"],
+                            voce["scala_cv"], tuple(reversed(colore_pieno)), voce["spessore_cv"], cv2.LINE_AA)
 
     # lettere decorative di sfondo (sempre disperse/vaganti)
     colore_extra = tuple(max(0, min(255, int(c * intensita * 0.35))) for c in colore_rgb)
@@ -924,13 +1000,12 @@ def disegna_iscrizione(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, col
             cv2.putText(canvas, stato["isc_lettera_extra"][j], (int(x), int(y)), stato["isc_font_cv"],
                         0.5, tuple(reversed(colore_extra)), 1, cv2.LINE_AA)
 
-    colore_pieno = tuple(max(0, min(255, int(c * intensita))) for c in colore_rgb)
     for k in range(n_car):
         lf = stato["isc_lock_frames"][k]
         pos_target = stato["isc_pos_target"][k]
         offset_particelle = stato["isc_particelle_offset"][k]
 
-        if stato["isc_disperso"][k] or (i >= fine_hold and stato["isc_bloccato"][k]):
+        if stato["isc_disperso"][k] or (i >= fine_hold and stato["isc_bloccato"][k] and not sovrapponi):
             stato["isc_disperso"][k] = True
             t_disp = np.clip((i - fine_hold) / max(1, fine_seg - fine_hold), 0.0, 1.0)
             alpha = max(0.0, 1.0 - t_disp)
@@ -948,6 +1023,8 @@ def disegna_iscrizione(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, col
             continue
 
         if stato["isc_bloccato"][k]:
+            if sovrapponi and idx_frase in stato["isc_archiviati"]:
+                continue   # gia' disegnata sopra dall'archivio statico
             ch = stato["isc_frase_corrente"][k]
             if usa_pil:
                 draw.text((float(pos_target[0]), float(pos_target[1])), ch, font=font_pil,
@@ -983,7 +1060,6 @@ def disegna_iscrizione(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, col
 
     return canvas
 
-
 MOTORI = {
     "Deriva (cartesiana)": {"funzione": disegna_ellisse, "n_step": 900, "fade": 0.90},
     "Fioritura (polare)": {"funzione": disegna_loto, "n_step": 3300, "fade": 0.80},
@@ -998,7 +1074,7 @@ MOTORI = {
 
 def genera_video(feat, path_out, width, height, colore_bg, colore_bassi, colore_medi, colore_alti,
                   forma, fps=FPS, seed=507, densita=1.0, spessore=2, reattivita=1.0, frase="",
-                  dimensione_testo=1.0, font_scelto=0, lettere_extra=40):
+                  dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False):
     np.random.seed(seed)
     cx, cy = width // 2, height // 2
     # scala anisotropica sui due assi (invece di un unico raggio isotropo):
@@ -1033,7 +1109,7 @@ def genera_video(feat, path_out, width, height, colore_bg, colore_bassi, colore_
             colore_bassi=colore_bassi, colore_medi=colore_medi, colore_alti=colore_alti,
             t1_arr=t1_arr, fps=fps,
             reattivita=reattivita, spessore=spessore, stato=stato, frase=frase,
-            dimensione_testo=dimensione_testo, font_scelto=font_scelto, lettere_extra=lettere_extra,
+            dimensione_testo=dimensione_testo, font_scelto=font_scelto, lettere_extra=lettere_extra, sovrapponi=sovrapponi,
         )
         canvas = canvas_u8.astype(np.float32)
 
@@ -1048,7 +1124,7 @@ def genera_video(feat, path_out, width, height, colore_bg, colore_bassi, colore_
 
 def genera_anteprima(feat, width, height, colore_bg, colore_bassi, colore_medi, colore_alti, forma,
                       densita, spessore, reattivita, seed=507, finestra_s=4.0, fps=FPS, frase="",
-                      dimensione_testo=1.0, font_scelto=0, lettere_extra=40):
+                      dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False):
     """Genera un'immagine statica che mostra come apparirebbe il pattern al
     picco energetico del brano (RMS+bassi massimi). Simula solo la finestra
     di pochi secondi che precede il picco (la scia decade rapidamente, quindi
@@ -1090,7 +1166,7 @@ def genera_anteprima(feat, width, height, colore_bg, colore_bassi, colore_medi, 
             colore_bassi=colore_bassi, colore_medi=colore_medi, colore_alti=colore_alti,
             t1_arr=t1_arr, fps=fps,
             reattivita=reattivita, spessore=spessore, stato=stato, frase=frase,
-            dimensione_testo=dimensione_testo, font_scelto=font_scelto, lettere_extra=lettere_extra,
+            dimensione_testo=dimensione_testo, font_scelto=font_scelto, lettere_extra=lettere_extra, sovrapponi=sovrapponi,
         )
         canvas = canvas_u8.astype(np.float32)
 
@@ -1198,6 +1274,7 @@ def main():
     dimensione_testo = 1.0
     font_scelto = 0
     lettere_extra = 40
+    sovrapponi = False
     if forma == "Iscrizione (testo a tempo)":
         frase = st.text_area(
             "Frasi da scrivere a tempo (una per riga) :: Phrases to write in time (one per line)",
@@ -1228,6 +1305,15 @@ def main():
                 help="Quante lettere decorative vagano sullo sfondo senza mai assestarsi :: "
                      "How many decorative letters wander in the background without settling"
             )
+        sovrapponi = st.checkbox(
+            "Le frasi restano impilate a schermo (non si dissolvono) :: "
+            "Phrases stay stacked on screen (don't dissolve)",
+            value=False,
+            help="Con piu' righe, ogni frase completata resta visibile sopra/sotto le altre "
+                 "invece di sparire prima della successiva :: With multiple lines, each "
+                 "completed phrase stays visible above/below the others instead of "
+                 "disappearing before the next one"
+        )
 
     col1, col2 = st.columns(2)
     with col1:
@@ -1309,7 +1395,7 @@ def main():
             anteprima_bgr, i_picco = genera_anteprima(
                 feat, width, height, colore_bg, colore_bassi, colore_medi, colore_alti, forma,
                 densita, spessore, reattivita, frase=frase,
-                dimensione_testo=dimensione_testo, font_scelto=font_scelto, lettere_extra=lettere_extra,
+                dimensione_testo=dimensione_testo, font_scelto=font_scelto, lettere_extra=lettere_extra, sovrapponi=sovrapponi,
             )
         anteprima_rgb = cv2.cvtColor(anteprima_bgr, cv2.COLOR_BGR2RGB)
         st.image(
@@ -1334,7 +1420,7 @@ def main():
                     feat, path_video_muto, width, height, colore_bg,
                     colore_bassi, colore_medi, colore_alti, forma,
                     densita=densita, spessore=spessore, reattivita=reattivita, frase=frase,
-                    dimensione_testo=dimensione_testo, font_scelto=font_scelto, lettere_extra=lettere_extra,
+                    dimensione_testo=dimensione_testo, font_scelto=font_scelto, lettere_extra=lettere_extra, sovrapponi=sovrapponi,
                 )
 
                 path_finale = os.path.join(tmp, "basicart_output.mp4")
