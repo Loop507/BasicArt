@@ -1187,11 +1187,29 @@ def mux_audio(path_video_muto, path_audio, path_out, durata):
 
 
 def genera_report(nome_file, forma, width, height, risoluzione_label, feat,
-                   hex_bg, hex_bassi, hex_medi, hex_alti, densita, spessore, reattivita, seed, vol):
+                   hex_bg, hex_bassi, hex_medi, hex_alti, densita, spessore, reattivita, seed, vol,
+                   frase="", font_scelto=None, sovrapponi=False):
     """Report bilingue IT/EN stile Loop507 (blocco IT completo seguito dal
     blocco EN completo, formato compatto senza separatori — come da
     modello fornito). Restituisce sia la versione da mostrare in chat
     (con code-fence) sia il testo grezzo per il download."""
+    riga_extra_it = ""
+    riga_extra_en = ""
+    if forma == "Iscrizione (testo a tempo)" and frase:
+        elenco = [f.strip() for f in frase.split("\n") if f.strip()]
+        frasi_join = " / ".join(elenco)
+        nome_font = _FONT_TTF_NOMI.get(font_scelto, "n/d")
+        riga_extra_it = (
+            f"FRASI           :: {frasi_join}\n"
+            f"FONT            :: {nome_font}\n"
+            f"FRASI IMPILATE  :: {'SI' if sovrapponi else 'NO'}\n"
+        )
+        riga_extra_en = (
+            f"PHRASES         :: {frasi_join}\n"
+            f"FONT            :: {nome_font}\n"
+            f"STACKED PHRASES :: {'YES' if sovrapponi else 'NO'}\n"
+        )
+
     it = (
         f":: BASICART // Vol. {vol:03d}\n"
         "REPORT ::\n"
@@ -1210,6 +1228,7 @@ def genera_report(nome_file, forma, width, height, risoluzione_label, feat,
         f"SPESSORE        :: {spessore}\n"
         f"REATTIVITA'     :: {reattivita:.2f}x\n"
         f"SEED            :: {seed}\n"
+        f"{riga_extra_it}"
         "DSP :: RMS, spectral centroid, onset strength, bande bassi/medi/\n"
         "       alti (STFT), beat tracking — nessun modello AI/neurale.\n"
         "Regia e Algoritmo :: Loop507\n"
@@ -1234,6 +1253,7 @@ def genera_report(nome_file, forma, width, height, risoluzione_label, feat,
         f"THICKNESS       :: {spessore}\n"
         f"REACTIVITY      :: {reattivita:.2f}x\n"
         f"SEED            :: {seed}\n"
+        f"{riga_extra_en}"
         "DSP :: RMS, spectral centroid, onset strength, low/mid/high\n"
         "       bands (STFT), beat tracking — no AI/neural model.\n"
         "Direction & Algorithm :: Loop507\n"
@@ -1442,7 +1462,7 @@ def main():
                 report_md, report_txt = genera_report(
                     nome_file, forma, width, height, risoluzione_label, feat,
                     hex_bg, hex_bassi, hex_medi, hex_alti, densita, spessore, reattivita,
-                    seed=507, vol=vol,
+                    seed=507, vol=vol, frase=frase, font_scelto=font_scelto, sovrapponi=sovrapponi,
                 )
                 st.session_state["basicart_report_md"] = report_md
                 st.session_state["basicart_report_txt"] = report_txt
