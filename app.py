@@ -42,7 +42,7 @@ RISOLUZIONI = {
     "1:1   (720x720)": (720, 720),
 }
 
-FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)"]
+FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)"]
 
 # font veri (TTF) per "Iscrizione" — cartella "fonts/" accanto a questo script.
 # Se mancante, l'app ripiega automaticamente sui font Hershey di OpenCV
@@ -1132,6 +1132,64 @@ def disegna_sinapsi(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore
     return canvas
 
 
+def disegna_labirinto(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                       colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
+                       dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False):
+    """Griglia di tasselli diagonali (stile Truchet): ogni cella disegna
+    una linea "/" o "\\" — ispirato al celeberrimo one-liner Commodore 64
+    BASIC "10 PRINT CHR$(205.5+RND(1));:GOTO 10" che genera labirinti
+    proprio con questa tecnica (Montfort et al., libro "10 PRINT").
+    Reinterpretazione: la probabilita' tra le due diagonali e' pilotata dal
+    bilancio bassi/alti del brano invece che puramente casuale (un brano
+    piu' basso tende a un orientamento, uno piu' brillante all'altro), e
+    la griglia intera si "riorganizza a scatti" ad ogni battito invece di
+    restare fissa o cambiare ogni frame."""
+    fattore, _k1, _k2, _k_loto, _onset, intensita, velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    bassi = feat["bassi"][i]
+    alti = feat["alti"][i]
+    h, w = canvas.shape[:2]
+
+    n_lato = max(6, int(np.sqrt(len(t1_arr)) * 1.4))
+    dim_cella = min(w, h) / n_lato
+    n_righe = int(h / dim_cella) + 1
+    n_colonne = int(w / dim_cella) + 1
+
+    if stato is None:
+        stato = {}
+    if "lab_griglia" not in stato or stato["lab_griglia"].shape != (n_righe, n_colonne):
+        stato["lab_griglia"] = np.random.random((n_righe, n_colonne)) < 0.5
+        stato["lab_prossimo_cambio"] = 0
+
+    if i >= stato["lab_prossimo_cambio"]:
+        # probabilita' tra le due diagonali pilotata dal bilancio bassi/alti
+        p = np.clip(0.5 + 0.35 * (alti - bassi), 0.1, 0.9)
+        stato["lab_griglia"] = np.random.random((n_righe, n_colonne)) < p
+        # intervallo di rigenerazione legato al BPM (circa una battuta),
+        # con un minimo per non diventare stroboscopico
+        intervallo = max(int(fps * 0.25), int(fps * 60.0 / (feat["bpm"] * velocita + 1e-6) * 0.5))
+        stato["lab_prossimo_cambio"] = i + intervallo
+
+    griglia = stato["lab_griglia"]
+    colore_base = _colore_miscelato(feat, i, colore_bassi, colore_medi, colore_alti)
+    intens_cella = 0.5 + 0.5 * np.clip(fattore, 0.0, 1.5)
+    colore_int = tuple(min(int(c * intensita * intens_cella), 255) for c in colore_base)
+
+    for r in range(n_righe):
+        y0 = int(r * dim_cella)
+        y1 = int((r + 1) * dim_cella)
+        for c in range(n_colonne):
+            x0 = int(c * dim_cella)
+            x1 = int((c + 1) * dim_cella)
+            if griglia[r, c]:
+                cv2.line(canvas, (x0, y0), (x1, y1), colore_int, spessore, cv2.LINE_AA)
+            else:
+                cv2.line(canvas, (x1, y0), (x0, y1), colore_int, spessore, cv2.LINE_AA)
+
+    return canvas
+
+
 MOTORI = {
     "Deriva (cartesiana)": {"funzione": disegna_ellisse, "n_step": 900, "fade": 0.90},
     "Fioritura (polare)": {"funzione": disegna_loto, "n_step": 3300, "fade": 0.80},
@@ -1142,6 +1200,7 @@ MOTORI = {
     "Aritmia (verticali)": {"funzione": disegna_aritmia, "n_step": 160, "fade": 0.0},
     "Iscrizione (testo a tempo)": {"funzione": disegna_iscrizione, "n_step": 100, "fade": 0.0},
     "Sinapsi (rete)": {"funzione": disegna_sinapsi, "n_step": 55, "fade": 0.55},
+    "Labirinto (tasselli)": {"funzione": disegna_labirinto, "n_step": 900, "fade": 0.0},
 }
 
 
