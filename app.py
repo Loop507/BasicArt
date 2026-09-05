@@ -42,7 +42,7 @@ RISOLUZIONI = {
     "1:1   (720x720)": (720, 720),
 }
 
-FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)"]
+FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)"]
 
 # font veri (TTF) per "Iscrizione" — cartella "fonts/" accanto a questo script.
 # Se mancante, l'app ripiega automaticamente sui font Hershey di OpenCV
@@ -1190,6 +1190,65 @@ def disegna_labirinto(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colo
     return canvas
 
 
+def disegna_risonanza(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                       colore_alti, t1_arr, fps, reattivita=1.0, spessore=1, stato=None, frase="",
+                       dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False):
+    """Placca di Chladni: punti (come granelli di sabbia) si dispongono
+    lungo le linee nodali di un'onda stazionaria — il principio fisico
+    della cimatica (Ernst Chladni, XVIII sec.), "il suono reso visibile"
+    letteralmente. Formula generica di sovrapposizione di due modi d'onda
+    F(x,y)=sin(n*pi*x)*sin(m*pi*y) - rapporto*sin(m*pi*x)*sin(n*pi*y); i
+    numeri di modo n,m sono pilotati da bassi/alti del brano, il rapporto
+    tra i due termini dai medi — piccole variazioni cambiano drasticamente
+    la figura, come un vero piatto di Chladni che cambia frequenza."""
+    fattore, _k1, _k2, _k_loto, onset, intensita, _velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    bassi = feat["bassi"][i]
+    medi = feat["medi"][i]
+    alti = feat["alti"][i]
+    h, w = canvas.shape[:2]
+
+    n_modo = 2 + int(6 * bassi)
+    m_modo = 2 + int(6 * alti)
+    if m_modo == n_modo:
+        m_modo += 1
+    rapporto = 0.3 + 0.7 * medi
+
+    ris = max(120, int(np.sqrt(len(t1_arr)) * 10))
+    xs_lin = np.linspace(0, 1, ris)
+    ys_lin = np.linspace(0, 1, ris)
+    X, Y = np.meshgrid(xs_lin, ys_lin)
+
+    F = np.sin(n_modo * np.pi * X) * np.sin(m_modo * np.pi * Y) - \
+        rapporto * np.sin(m_modo * np.pi * X) * np.sin(n_modo * np.pi * Y)
+
+    soglia = 0.035 + 0.03 * np.clip(fattore, 0.0, 1.5)
+    maschera = np.abs(F) < soglia
+
+    ys_idx, xs_idx = np.where(maschera)
+    px = (cx + (xs_idx / ris - 0.5) * 2 * raggio_x * 1.4).astype(np.int32)
+    py = (cy + (ys_idx / ris - 0.5) * 2 * raggio_y * 1.4).astype(np.int32)
+
+    dentro = (px >= 0) & (px < w) & (py >= 0) & (py < h)
+    px, py = px[dentro], py[dentro]
+
+    colore_base = _colore_miscelato(feat, i, colore_bassi, colore_medi, colore_alti)
+    intens = 0.7 + 0.3 * onset
+    colore_int = np.array([min(int(c * intensita * intens), 255) for c in colore_base], dtype=np.uint8)
+
+    if spessore <= 1:
+        canvas[py, px] = colore_int
+    else:
+        mask_dil = np.zeros((h, w), dtype=np.uint8)
+        mask_dil[py, px] = 255
+        kernel = np.ones((spessore, spessore), np.uint8)
+        mask_dil = cv2.dilate(mask_dil, kernel)
+        canvas[mask_dil > 0] = colore_int
+
+    return canvas
+
+
 MOTORI = {
     "Deriva (cartesiana)": {"funzione": disegna_ellisse, "n_step": 900, "fade": 0.90},
     "Fioritura (polare)": {"funzione": disegna_loto, "n_step": 3300, "fade": 0.80},
@@ -1201,6 +1260,7 @@ MOTORI = {
     "Iscrizione (testo a tempo)": {"funzione": disegna_iscrizione, "n_step": 100, "fade": 0.0},
     "Sinapsi (rete)": {"funzione": disegna_sinapsi, "n_step": 55, "fade": 0.55},
     "Labirinto (tasselli)": {"funzione": disegna_labirinto, "n_step": 900, "fade": 0.0},
+    "Risonanza (placca)": {"funzione": disegna_risonanza, "n_step": 900, "fade": 0.5},
 }
 
 
