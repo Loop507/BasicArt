@@ -42,7 +42,7 @@ RISOLUZIONI = {
     "1:1   (720x720)": (720, 720),
 }
 
-FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)"]
+FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)"]
 
 # font veri (TTF) per "Iscrizione" — cartella "fonts/" accanto a questo script.
 # Se mancante, l'app ripiega automaticamente sui font Hershey di OpenCV
@@ -1060,6 +1060,78 @@ def disegna_iscrizione(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, col
 
     return canvas
 
+def disegna_sinapsi(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                     colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
+                     dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False):
+    """Rete di nodi che vagano lentamente per il fotogramma, connessi da
+    linee dritte quando sono abbastanza vicini — come una rete neurale o
+    un circuito che "si aggrappa" da solo. Struttura interamente diversa
+    dalle altre forme: nessuna curva, nessun frattale, solo nodi mobili e
+    connessioni rette. Il raggio di connessione pulsa con l'energia del
+    brano (fattore incorpora gia' il gate di silenzio: nel silenzio la
+    rete quasi si disconnette), la velocita' di deriva dei nodi e' legata
+    al BPM. La luminosita' di ogni connessione dipende da quanto i due
+    nodi sono vicini (piu' vicini = piu' luminosa)."""
+    fattore, _k1, _k2, _k_loto, _onset, intensita, velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    h, w = canvas.shape[:2]
+    n_nodi = max(6, len(t1_arr))
+
+    if stato is None:
+        stato = {}
+    if "sin_pos" not in stato or len(stato["sin_pos"]) != n_nodi:
+        rng = np.random.default_rng(507)
+        margine = 30
+        stato["sin_pos"] = np.array([
+            [rng.uniform(margine, max(margine + 1, w - margine)),
+             rng.uniform(margine, max(margine + 1, h - margine))]
+            for _ in range(n_nodi)
+        ])
+        stato["sin_vel"] = rng.uniform(-0.7, 0.7, size=(n_nodi, 2))
+        stato["sin_rng"] = rng
+
+    pos = stato["sin_pos"]
+    vel = stato["sin_vel"]
+    rng = stato["sin_rng"]
+
+    vel += rng.uniform(-0.04, 0.04, size=vel.shape)
+    vel = np.clip(vel, -1.5, 1.5)
+    pos = pos + vel * (0.6 + 0.8 * velocita)
+
+    margine = 20
+    for ax, lim in ((0, w), (1, h)):
+        fuori = (pos[:, ax] < margine) | (pos[:, ax] > lim - margine)
+        vel[fuori, ax] *= -1
+        pos[:, ax] = np.clip(pos[:, ax], margine, lim - margine)
+
+    stato["sin_pos"] = pos
+    stato["sin_vel"] = vel
+
+    # raggio di connessione pulsante con l'energia (fattore incorpora gia'
+    # il gate di silenzio): rete piu' fitta quando il brano e' potente
+    raggio_connessione = (min(w, h) * 0.05) + (min(w, h) * 0.18) * np.clip(fattore, 0.0, 1.5)
+
+    diff = pos[:, None, :] - pos[None, :, :]
+    dist = np.sqrt((diff ** 2).sum(axis=2))
+
+    colore_base = _colore_miscelato(feat, i, colore_bassi, colore_medi, colore_alti)
+    colore_int = tuple(min(int(c * intensita), 255) for c in colore_base)
+
+    for a in range(n_nodi):
+        for b in range(a + 1, n_nodi):
+            d = dist[a, b]
+            if d < raggio_connessione:
+                alfa = 1.0 - d / raggio_connessione
+                col = tuple(int(c * alfa) for c in colore_int)
+                cv2.line(canvas, tuple(pos[a].astype(int)), tuple(pos[b].astype(int)), col, 1, cv2.LINE_AA)
+
+    for p in pos:
+        cv2.circle(canvas, tuple(p.astype(int)), max(2, spessore), colore_int, -1, cv2.LINE_AA)
+
+    return canvas
+
+
 MOTORI = {
     "Deriva (cartesiana)": {"funzione": disegna_ellisse, "n_step": 900, "fade": 0.90},
     "Fioritura (polare)": {"funzione": disegna_loto, "n_step": 3300, "fade": 0.80},
@@ -1069,6 +1141,7 @@ MOTORI = {
     "Frontiera (piano complesso)": {"funzione": disegna_julia, "n_step": 900, "fade": 0.0},
     "Aritmia (verticali)": {"funzione": disegna_aritmia, "n_step": 160, "fade": 0.0},
     "Iscrizione (testo a tempo)": {"funzione": disegna_iscrizione, "n_step": 100, "fade": 0.0},
+    "Sinapsi (rete)": {"funzione": disegna_sinapsi, "n_step": 55, "fade": 0.55},
 }
 
 
