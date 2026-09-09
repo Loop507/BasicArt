@@ -42,7 +42,7 @@ RISOLUZIONI = {
     "1:1   (720x720)": (720, 720),
 }
 
-FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Fulmine (aggregazione)"]
+FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)"]
 
 # font veri (TTF) per "Iscrizione" — cartella "fonts/" accanto a questo script.
 # Se mancante, l'app ripiega automaticamente sui font Hershey di OpenCV
@@ -1249,98 +1249,63 @@ def disegna_risonanza(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colo
     return canvas
 
 
-def disegna_fulmine(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+def disegna_statica(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
                      colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
                      dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False):
-    """Diffusion-Limited Aggregation (DLA, Witten & Sander 1981): una
-    struttura ramificata che cresce nel tempo quando particelle in cammino
-    casuale ("walker") si attaccano non appena toccano la struttura gia'
-    formata — lo stesso principio fisico dietro fulmini, cristalli di
-    ghiaccio, licheni e crescita corallina. La velocita' di crescita
-    (soglia di attaccamento) e' pilotata dall'energia del brano (il gate
-    di silenzio gia' incorporato in 'fattore' congela quasi la crescita
-    nel silenzio), la "nervosita'" del cammino casuale dagli alti.
-    Implementazione vettorizzata con numpy per restare performante anche
-    quando la struttura cresce a migliaia di punti."""
-    fattore, _k1, _k2, _k_loto, _onset, intensita, _velocita = _parametri_da_audio(
+    """Automa cellulare elementare (Stephen Wolfram, 1983): una riga di
+    celle 0/1 genera la riga successiva applicando una regola booleana ai
+    tre vicini (sinistra, centro, destra) — da una condizione iniziale
+    casuale emerge una texture complessa e imprevedibile, lo stesso
+    principio dietro il motivo sul guscio della lumaca Conus textile. La
+    regola attiva e' scelta da un piccolo set di regole "caotiche" (non
+    frattali auto-simili come la regola 90) in base al timbro del brano;
+    l'intera griglia si rigenera a scatti ad ogni battito, come Labirinto,
+    non ogni frame (altrimenti risulterebbe stroboscopica)."""
+    fattore, _k1, _k2, _k_loto, _onset, intensita, velocita = _parametri_da_audio(
         feat, i, t_frame, fps, reattivita
     )
-    alti = feat["alti"][i] * reattivita
+    bassi = feat["bassi"][i]
+    alti = feat["alti"][i]
     h, w = canvas.shape[:2]
-    n_walker = max(10, len(t1_arr))
+
+    regole_caotiche = [30, 45, 105, 150, 169, 225]
+
+    n_col = max(80, int(np.sqrt(len(t1_arr)) * 8))
+    n_righe = min(110, max(60, int(n_col * h / w)))
 
     if stato is None:
         stato = {}
-    if "dla_struttura" not in stato:
-        stato["dla_struttura"] = np.array([[float(cx), float(cy)]], dtype=np.float64)
-        rng = np.random.default_rng(507)
-        stato["dla_rng"] = rng
-        angoli = rng.uniform(0, 2 * np.pi, size=n_walker)
-        raggio_spawn = min(w, h) * 0.30
-        stato["dla_walker"] = np.stack(
-            [cx + raggio_spawn * np.cos(angoli), cy + raggio_spawn * np.sin(angoli)], axis=1
-        )
+    if "sta_griglia" not in stato or stato["sta_griglia"].shape != (n_righe, n_col):
+        stato["sta_griglia"] = np.zeros((n_righe, n_col), dtype=np.uint8)
+        stato["sta_prossimo_cambio"] = 0
 
-    rng = stato["dla_rng"]
-    struttura = stato["dla_struttura"]
-    walker = stato["dla_walker"]
+    if i >= stato["sta_prossimo_cambio"]:
+        idx_regola = int(np.clip((bassi + alti) / 2 * len(regole_caotiche), 0, len(regole_caotiche) - 1))
+        regola = regole_caotiche[idx_regola]
+        tabella = np.array([(regola >> k) & 1 for k in range(8)], dtype=np.uint8)
 
-    # attrazione verso il punto piu' vicino della struttura, sommata al
-    # cammino casuale: un DLA fisicamente puro (solo moto browniano)
-    # impiegherebbe troppi frame per convergere in un video; la lieve
-    # attrazione accelera la crescita mantenendo l'aspetto organico
-    diff_precalc = walker[:, None, :] - struttura[None, :, :]
-    dist_precalc = np.sqrt((diff_precalc ** 2).sum(axis=2))
-    idx_vicino = dist_precalc.argmin(axis=1)
-    punto_vicino = struttura[idx_vicino]
-    direzione = punto_vicino - walker
-    norma = np.linalg.norm(direzione, axis=1, keepdims=True)
-    norma[norma == 0] = 1.0
-    direzione_unitaria = direzione / norma
+        rng = np.random.default_rng(int(i) + 507)
+        riga = (rng.random(n_col) < 0.5).astype(np.uint8)
+        griglia = np.zeros((n_righe, n_col), dtype=np.uint8)
+        for r in range(n_righe):
+            griglia[r] = riga
+            sx = np.roll(riga, 1)
+            dx = np.roll(riga, -1)
+            indice = sx * 4 + riga * 2 + dx
+            riga = tabella[indice]
+        stato["sta_griglia"] = griglia
 
-    passo = 1.5 + 2.5 * alti
-    walker = walker + direzione_unitaria * 1.1 + rng.uniform(-passo, passo, size=walker.shape)
+        intervallo = max(int(fps * 1.0), int(fps * 60.0 / (feat["bpm"] * velocita + 1e-6)))
+        stato["sta_prossimo_cambio"] = i + intervallo
 
-    diff = walker[:, None, :] - struttura[None, :, :]
-    dist = np.sqrt((diff ** 2).sum(axis=2))
-    dist_min = dist.min(axis=1)
-
-    soglia_attacco = np.clip(1.0 + 6.0 * fattore, 0.5, 8.0)
-    attaccati = dist_min < soglia_attacco
-    if attaccati.any():
-        struttura = np.vstack([struttura, walker[attaccati]])
-
-    centro = np.array([cx, cy])
-    raggio_struttura = float(np.sqrt(((struttura - centro) ** 2).sum(axis=1)).max()) + 20
-    raggio_morte = raggio_struttura + 60
-    dist_centro = np.sqrt(((walker - centro) ** 2).sum(axis=1))
-    da_rigenerare = attaccati | (dist_centro > raggio_morte)
-
-    n_rigenera = int(da_rigenerare.sum())
-    if n_rigenera > 0:
-        angoli = rng.uniform(0, 2 * np.pi, size=n_rigenera)
-        r_spawn = raggio_struttura + rng.uniform(10, 30, size=n_rigenera)
-        walker[da_rigenerare, 0] = cx + r_spawn * np.cos(angoli)
-        walker[da_rigenerare, 1] = cy + r_spawn * np.sin(angoli)
-
-    stato["dla_struttura"] = struttura
-    stato["dla_walker"] = walker
-
+    griglia = stato["sta_griglia"]
     colore_base = _colore_miscelato(feat, i, colore_bassi, colore_medi, colore_alti)
-    colore_int = np.array([min(int(c * intensita), 255) for c in colore_base], dtype=np.uint8)
+    intens = 0.6 + 0.4 * np.clip(fattore, 0.0, 1.5)
+    campo = (griglia * 255).astype(np.uint8)
+    campo_grande = cv2.resize(campo, (w, h), interpolation=cv2.INTER_NEAREST)
 
-    pts = struttura.astype(np.int32)
-    dentro = (pts[:, 0] >= 0) & (pts[:, 0] < w) & (pts[:, 1] >= 0) & (pts[:, 1] < h)
-    px, py = pts[dentro, 0], pts[dentro, 1]
-
-    if spessore <= 1:
-        canvas[py, px] = colore_int
-    else:
-        mask = np.zeros((h, w), dtype=np.uint8)
-        mask[py, px] = 255
-        kernel = np.ones((spessore, spessore), np.uint8)
-        mask = cv2.dilate(mask, kernel)
-        canvas[mask > 0] = colore_int
+    colore_finale = tuple(min(255, int(c * intensita * intens)) for c in colore_base)
+    canvas[campo_grande > 0] = colore_finale
 
     return canvas
 
@@ -1357,7 +1322,7 @@ MOTORI = {
     "Sinapsi (rete)": {"funzione": disegna_sinapsi, "n_step": 55, "fade": 0.55},
     "Labirinto (tasselli)": {"funzione": disegna_labirinto, "n_step": 900, "fade": 0.0},
     "Risonanza (placca)": {"funzione": disegna_risonanza, "n_step": 900, "fade": 0.5},
-    "Fulmine (aggregazione)": {"funzione": disegna_fulmine, "n_step": 40, "fade": 0.0},
+    "Statica (automa)": {"funzione": disegna_statica, "n_step": 900, "fade": 0.0},
 }
 
 
