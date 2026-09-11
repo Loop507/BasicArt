@@ -42,7 +42,7 @@ RISOLUZIONI = {
     "1:1   (720x720)": (720, 720),
 }
 
-FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)"]
+FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)"]
 
 # font veri (TTF) per "Iscrizione" — cartella "fonts/" accanto a questo script.
 # Se mancante, l'app ripiega automaticamente sui font Hershey di OpenCV
@@ -1310,6 +1310,114 @@ def disegna_statica(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore
     return canvas
 
 
+@functools.lru_cache(maxsize=8)
+def _solido_cache(nome):
+    """Vertici e spigoli di un solido platonico, calcolati una sola volta
+    e messi in cache (non dipendono dall'audio, solo dal nome del
+    solido). Gli spigoli sono trovati per distanza minima tra vertici,
+    cosi' non serve elencarli a mano per ciascun solido."""
+    phi = (1 + np.sqrt(5)) / 2
+    if nome == "cubo":
+        pts = np.array([[x, y, z] for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)], dtype=np.float64)
+    elif nome == "ottaedro":
+        pts = np.array([[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]], dtype=np.float64)
+    else:  # icosaedro
+        base = []
+        for s1 in (-1, 1):
+            for s2 in (-1, 1):
+                base.append([0, s1 * 1.0, s2 * phi])
+                base.append([s1 * 1.0, s2 * phi, 0])
+                base.append([s2 * phi, 0, s1 * 1.0])
+        pts = np.unique(np.array(base, dtype=np.float64), axis=0)
+
+    n = len(pts)
+    diff = pts[:, None, :] - pts[None, :, :]
+    dist = np.sqrt((diff ** 2).sum(axis=2))
+    triu = np.triu_indices(n, 1)
+    d_min = dist[triu].min()
+    spigoli = [(int(triu[0][k]), int(triu[1][k])) for k in range(len(triu[0]))
+               if dist[triu[0][k], triu[1][k]] < d_min * 1.05]
+    return pts, spigoli
+
+
+def _ruota_3d(pts, ax, ay, az):
+    """Ruota un insieme di punti 3D sui tre assi (matrici di rotazione
+    classiche, matematica generica non legata ad alcun riferimento)."""
+    cx_, sx_ = np.cos(ax), np.sin(ax)
+    cy_, sy_ = np.cos(ay), np.sin(ay)
+    cz_, sz_ = np.cos(az), np.sin(az)
+    rx = np.array([[1, 0, 0], [0, cx_, -sx_], [0, sx_, cx_]])
+    ry = np.array([[cy_, 0, sy_], [0, 1, 0], [-sy_, 0, cy_]])
+    rz = np.array([[cz_, -sz_, 0], [sz_, cz_, 0], [0, 0, 1]])
+    r = rz @ ry @ rx
+    return pts @ r.T
+
+
+def disegna_poliedro(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                      colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
+                      dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False):
+    """Poliedro 3D in wireframe (cubo/ottaedro/icosaedro) che ruota nello
+    spazio, proiettato in 2D con la matematica classica delle matrici di
+    rotazione e proiezione prospettica — l'effetto demoscene per
+    eccellenza, fatto interamente di spigoli dritti (nessuno degli altri
+    motori simula una vera terza dimensione). Il solido attivo cambia a
+    scatti ad ogni battito in base a quale banda (bassi/medi/alti) domina
+    in quel momento; la velocita' di rotazione sui tre assi e' pilotata
+    da bassi/medi/alti separatamente (tumbling asimmetrico), la
+    dimensione pulsa con l'energia complessiva, gli spigoli piu' lontani
+    (in profondita') sono leggermente piu' tenui per un accenno di
+    ombreggiatura pseudo-3D."""
+    fattore, _k1, _k2, _k_loto, _onset, intensita, velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    bassi = feat["bassi"][i]
+    medi = feat["medi"][i]
+    alti = feat["alti"][i]
+    h, w = canvas.shape[:2]
+
+    if stato is None:
+        stato = {}
+    if "pol_angoli" not in stato:
+        stato["pol_angoli"] = np.array([0.0, 0.0, 0.0])
+        stato["pol_solido"] = "icosaedro"
+        stato["pol_prossimo_cambio"] = 0
+
+    if i >= stato["pol_prossimo_cambio"]:
+        valori = {"cubo": bassi, "ottaedro": medi, "icosaedro": alti}
+        stato["pol_solido"] = max(valori, key=valori.get)
+        intervallo = max(int(fps * 1.5), int(fps * 60.0 / (feat["bpm"] * velocita + 1e-6) * 2))
+        stato["pol_prossimo_cambio"] = i + intervallo
+
+    stato["pol_angoli"] = stato["pol_angoli"] + np.array([
+        0.01 + 0.05 * bassi, 0.01 + 0.05 * medi, 0.01 + 0.05 * alti
+    ]) * velocita
+
+    pts, spigoli = _solido_cache(stato["pol_solido"])
+    ax_, ay_, az_ = stato["pol_angoli"]
+    ruotati = _ruota_3d(pts, ax_, ay_, az_)
+
+    raggio = min(w, h) * 0.28 * (0.7 + 0.5 * np.clip(fattore, 0.0, 1.5))
+    distanza_camera = 4.0
+    focale = 3.0
+
+    z = ruotati[:, 2]
+    fattore_prosp = focale / (z + distanza_camera)
+    xs2d = cx + ruotati[:, 0] * raggio * fattore_prosp
+    ys2d = cy + ruotati[:, 1] * raggio * fattore_prosp
+
+    colore_base = _colore_miscelato(feat, i, colore_bassi, colore_medi, colore_alti)
+
+    for a, b in spigoli:
+        z_media = (z[a] + z[b]) / 2
+        intens_prof = np.clip(0.5 + 0.5 * (z_media + 2) / 4, 0.3, 1.0)
+        colore = tuple(min(int(c * intensita * intens_prof), 255) for c in colore_base)
+        p1 = (int(xs2d[a]), int(ys2d[a]))
+        p2 = (int(xs2d[b]), int(ys2d[b]))
+        cv2.line(canvas, p1, p2, colore, spessore, cv2.LINE_AA)
+
+    return canvas
+
+
 MOTORI = {
     "Deriva (cartesiana)": {"funzione": disegna_ellisse, "n_step": 900, "fade": 0.90},
     "Fioritura (polare)": {"funzione": disegna_loto, "n_step": 3300, "fade": 0.80},
@@ -1323,6 +1431,7 @@ MOTORI = {
     "Labirinto (tasselli)": {"funzione": disegna_labirinto, "n_step": 900, "fade": 0.0},
     "Risonanza (placca)": {"funzione": disegna_risonanza, "n_step": 900, "fade": 0.5},
     "Statica (automa)": {"funzione": disegna_statica, "n_step": 900, "fade": 0.0},
+    "Poliedro (wireframe)": {"funzione": disegna_poliedro, "n_step": 100, "fade": 0.35},
 }
 
 
