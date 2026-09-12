@@ -1574,8 +1574,7 @@ def genera_report(nome_file, forma, width, height, risoluzione_label, feat,
         )
 
     it = (
-        f":: BASICART // Vol. {vol:03d}\n"
-        "REPORT ::\n"
+        f"[BASICART] // Vol. {vol:03d}\n"
         f"FILE            :: {nome_file}\n"
         f"FORMA           :: {forma}\n"
         f"FORMATO         :: {risoluzione_label}\n"
@@ -1599,8 +1598,7 @@ def genera_report(nome_file, forma, width, height, risoluzione_label, feat,
     )
 
     en = (
-        f":: BASICART // Vol. {vol:03d}\n"
-        "REPORT ::\n"
+        f"[BASICART] // Vol. {vol:03d}\n"
         f"FILE            :: {nome_file}\n"
         f"SHAPE           :: {forma}\n"
         f"RESOLUTION      :: {risoluzione_label}\n"
