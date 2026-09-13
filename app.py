@@ -42,7 +42,7 @@ RISOLUZIONI = {
     "1:1   (720x720)": (720, 720),
 }
 
-FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)"]
+FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)"]
 
 # font veri (TTF) per "Iscrizione" — cartella "fonts/" accanto a questo script.
 # Se mancante, l'app ripiega automaticamente sui font Hershey di OpenCV
@@ -1418,6 +1418,70 @@ def disegna_poliedro(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, color
     return canvas
 
 
+def disegna_epicicli(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                      colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
+                      dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False):
+    """Epicicli di Fourier: una catena di cerchi che ruotano l'uno
+    sull'altro (il centro di ogni cerchio e' la punta di quello
+    precedente) — la rappresentazione geometrica letterale di una serie
+    di Fourier, resa popolare da video divulgativi (3blue1brown) ma
+    matematica generica, non legata ad alcun riferimento specifico. La
+    punta dell'ultimo cerchio lascia una traccia che si accumula nel
+    tempo, disegnando un percorso via via piu' intricato — curve
+    continue, complementari agli spigoli dritti di Poliedro. Il raggio
+    di ogni armonica e' pilotato da una banda diversa del brano (bassi/
+    medi/alti/energia complessiva), le velocita' angolari sono multipli
+    interi di una velocita' base legata al BPM, come in una vera serie
+    di Fourier dove le armoniche piu' alte ruotano piu' veloci."""
+    fattore, _k1, _k2, _k_loto, _onset, intensita, velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    bassi = feat["bassi"][i]
+    medi = feat["medi"][i]
+    alti = feat["alti"][i]
+    h, w = canvas.shape[:2]
+
+    if stato is None:
+        stato = {}
+    if "epi_fase" not in stato:
+        stato["epi_fase"] = 0.0
+        stato["epi_traccia"] = []
+
+    stato["epi_fase"] += 0.03 * velocita
+    fase = stato["epi_fase"]
+
+    n_armoniche = 6
+    bande = [bassi, medi, alti, (bassi + medi) / 2, (medi + alti) / 2, np.clip(fattore, 0.0, 1.5) / 1.5]
+    raggio_base = min(w, h) * 0.22
+
+    colore_base = _colore_miscelato(feat, i, colore_bassi, colore_medi, colore_alti)
+    colore_cerchio = tuple(min(int(c * intensita * 0.35), 255) for c in colore_base)
+    colore_traccia = tuple(min(int(c * intensita), 255) for c in colore_base)
+
+    x, y = float(cx), float(cy)
+    for k in range(1, n_armoniche + 1):
+        r = raggio_base * (0.15 + 0.5 * bande[k - 1]) / k
+        ang = fase * k + k * 0.7
+        x_next = x + r * np.cos(ang)
+        y_next = y + r * np.sin(ang)
+        cv2.circle(canvas, (int(x), int(y)), max(1, int(r)), colore_cerchio, 1, cv2.LINE_AA)
+        cv2.line(canvas, (int(x), int(y)), (int(x_next), int(y_next)), colore_cerchio, 1, cv2.LINE_AA)
+        x, y = x_next, y_next
+
+    stato["epi_traccia"].append((x, y))
+    max_traccia = 500
+    if len(stato["epi_traccia"]) > max_traccia:
+        stato["epi_traccia"] = stato["epi_traccia"][-max_traccia:]
+
+    pts = np.array(stato["epi_traccia"], dtype=np.int32).reshape(-1, 1, 2)
+    if len(pts) > 1:
+        cv2.polylines(canvas, [pts], isClosed=False, color=colore_traccia, thickness=spessore, lineType=cv2.LINE_AA)
+
+    cv2.circle(canvas, (int(x), int(y)), max(2, spessore + 1), colore_traccia, -1, cv2.LINE_AA)
+
+    return canvas
+
+
 MOTORI = {
     "Deriva (cartesiana)": {"funzione": disegna_ellisse, "n_step": 900, "fade": 0.90},
     "Fioritura (polare)": {"funzione": disegna_loto, "n_step": 3300, "fade": 0.80},
@@ -1432,6 +1496,7 @@ MOTORI = {
     "Risonanza (placca)": {"funzione": disegna_risonanza, "n_step": 900, "fade": 0.5},
     "Statica (automa)": {"funzione": disegna_statica, "n_step": 900, "fade": 0.0},
     "Poliedro (wireframe)": {"funzione": disegna_poliedro, "n_step": 100, "fade": 0.35},
+    "Epicicli (Fourier)": {"funzione": disegna_epicicli, "n_step": 100, "fade": 0.0},
 }
 
 
