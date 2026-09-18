@@ -42,7 +42,7 @@ RISOLUZIONI = {
     "1:1   (720x720)": (720, 720),
 }
 
-FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)"]
+FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)", "Plasma (interferenza)"]
 
 # font veri (TTF) per "Iscrizione" — cartella "fonts/" accanto a questo script.
 # Se mancante, l'app ripiega automaticamente sui font Hershey di OpenCV
@@ -1482,6 +1482,59 @@ def disegna_epicicli(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, color
     return canvas
 
 
+def disegna_plasma(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                    colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
+                    dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False):
+    """Effetto plasma: il classico effetto demoscene anni '80-'90, campo
+    continuo generato sommando onde sinusoidali (piane e radiali) con fasi
+    che scorrono nel tempo — matematica generica di dominio pubblico
+    (somma di sinusoidi), non legata a un'implementazione specifica. Le
+    frequenze delle onde sono pilotate da bassi/medi/alti (piu' turbolento
+    quando il brano e' ricco di armoniche), la velocita' di scorrimento
+    delle fasi dall'energia complessiva. A differenza di Risonanza
+    (soglia binaria sulle linee nodali), qui l'intensita' e' continua,
+    dando un flusso morbido che riempie sempre tutto il fotogramma."""
+    fattore, _k1, _k2, _k_loto, _onset, intensita, velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    bassi = feat["bassi"][i]
+    medi = feat["medi"][i]
+    alti = feat["alti"][i]
+    h, w = canvas.shape[:2]
+
+    ris_w = max(80, int(np.sqrt(len(t1_arr)) * 8))
+    ris_h = max(45, int(ris_w * h / w))
+
+    xs = np.linspace(0, 1, ris_w)
+    ys = np.linspace(0, 1, ris_h)
+    X, Y = np.meshgrid(xs, ys)
+
+    t = t_frame / fps * velocita
+
+    freq1 = 3 + 8 * bassi
+    freq2 = 3 + 8 * medi
+    freq3 = 4 + 10 * alti
+    freq4 = 2 + 4 * np.clip(fattore, 0.0, 1.5)
+
+    dist = np.sqrt((X - 0.5) ** 2 + (Y - 0.5) ** 2)
+
+    valore = (np.sin(X * freq1 * 2 * np.pi + t * 1.3) +
+              np.sin(Y * freq2 * 2 * np.pi + t * 0.9) +
+              np.sin(dist * freq3 * 2 * np.pi - t * 1.7) +
+              np.sin((X + Y) * freq4 * 2 * np.pi + t * 0.5))
+    valore = (valore + 4) / 8
+
+    colore_base = _colore_miscelato(feat, i, colore_bassi, colore_medi, colore_alti)
+    campo_u8 = np.clip(valore * 255, 0, 255).astype(np.uint8)
+    campo_grande = cv2.resize(campo_u8, (w, h), interpolation=cv2.INTER_LINEAR)
+
+    colore_arr = np.array(colore_base, dtype=np.float32)
+    campo_col = (campo_grande[..., None].astype(np.float32) / 255.0) * colore_arr * intensita
+    canvas[:] = np.clip(campo_col, 0, 255).astype(np.uint8)
+
+    return canvas
+
+
 MOTORI = {
     "Deriva (cartesiana)": {"funzione": disegna_ellisse, "n_step": 900, "fade": 0.90},
     "Fioritura (polare)": {"funzione": disegna_loto, "n_step": 3300, "fade": 0.80},
@@ -1497,6 +1550,7 @@ MOTORI = {
     "Statica (automa)": {"funzione": disegna_statica, "n_step": 900, "fade": 0.0},
     "Poliedro (wireframe)": {"funzione": disegna_poliedro, "n_step": 100, "fade": 0.35},
     "Epicicli (Fourier)": {"funzione": disegna_epicicli, "n_step": 100, "fade": 0.0},
+    "Plasma (interferenza)": {"funzione": disegna_plasma, "n_step": 900, "fade": 0.0},
 }
 
 
