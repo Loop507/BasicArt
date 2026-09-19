@@ -117,10 +117,26 @@ def _bande_spettrali(y, sr, hop_length, n_frames):
     def energia(mask):
         return S[mask].mean(axis=0) if mask.any() else np.zeros(S.shape[1])
 
-    bassi = _adatta(energia(m_bassi), n_frames)
-    medi = _adatta(energia(m_medi), n_frames)
-    alti = _adatta(energia(m_alti), n_frames)
-    return _norm(bassi), _norm(medi), _norm(alti)
+    bassi_raw = _adatta(energia(m_bassi), n_frames)
+    medi_raw = _adatta(energia(m_medi), n_frames)
+    alti_raw = _adatta(energia(m_alti), n_frames)
+
+    # quote di dominanza relativa (per il MIX colore): calcolate sui valori
+    # GREZZI (non normalizzati singolarmente) cosi' la somma dei tre pesi fa
+    # sempre 1 e riflette davvero quale banda domina in quell'istante. Usare
+    # invece bassi/medi/alti normalizzati ciascuno sul proprio range (come
+    # prima) e' un bug: ogni banda viene stirata a riempire 0..1 sul proprio
+    # massimo, quindi anche una banda quasi sempre debole (es. gli alti su un
+    # brano cupo) risulta "alla pari" delle altre nel calcolo dei pesi, e il
+    # colore miscelato resta quasi costante per tutto il brano invece di
+    # spostarsi visibilmente verso bassi/medi/alti quando quella banda prevale
+    tot_raw = bassi_raw + medi_raw + alti_raw + 1e-9
+    quota_bassi = bassi_raw / tot_raw
+    quota_medi = medi_raw / tot_raw
+    quota_alti = alti_raw / tot_raw
+
+    return (_norm(bassi_raw), _norm(medi_raw), _norm(alti_raw),
+            quota_bassi, quota_medi, quota_alti)
 
 
 def _spettro_a_barre(y, sr, hop_length, n_frames, n_barre=140):
@@ -164,12 +180,16 @@ def _colore_miscelato(feat, i, colore_bassi, colore_medi, colore_alti):
     relativa di ciascuna banda nel brano in questo istante — usato dalle
     forme che non hanno gia' una struttura a bande (Deriva, Fioritura,
     Pulviscolo, Graffio, Frontiera), cosi' il colore stesso segue il
-    timbro del brano momento per momento."""
-    bassi = feat["bassi"][i]
-    medi = feat["medi"][i]
-    alti = feat["alti"][i]
-    tot = bassi + medi + alti + 1e-9
-    wb, wm, wa = bassi / tot, medi / tot, alti / tot
+    timbro del brano momento per momento. Usa le "quote" di dominanza
+    (feat['quota_*'], calcolate su energia grezza, non normalizzata banda
+    per banda) e non bassi/medi/alti normalizzati: questi ultimi sono
+    stirati ciascuno sul proprio range 0..1 e quindi non riflettono la
+    vera dominanza relativa, producendo un colore quasi costante invece
+    che uno che si sposta chiaramente verso il colore della banda che
+    prevale davvero in quell'istante."""
+    wb = feat["quota_bassi"][i]
+    wm = feat["quota_medi"][i]
+    wa = feat["quota_alti"][i]
     return tuple(wb * colore_bassi[c] + wm * colore_medi[c] + wa * colore_alti[c] for c in range(3))
 
 
@@ -217,7 +237,7 @@ def analizza_audio(path_audio, fps, durata_max=MAX_DURATION_S):
     centroid = _norm(_adatta(centroid, n_frames))
     onset_env = _norm(_adatta(onset_env, n_frames))
 
-    bassi, medi, alti = _bande_spettrali(y, sr, hop_length, n_frames)
+    bassi, medi, alti, quota_bassi, quota_medi, quota_alti = _bande_spettrali(y, sr, hop_length, n_frames)
     spettro, spettro_classe = _spettro_a_barre(y, sr, hop_length, n_frames)
     bpm, battiti_video = _stima_bpm_e_battiti(y, sr, hop_length, fps, n_frames)
 
@@ -238,6 +258,12 @@ def analizza_audio(path_audio, fps, durata_max=MAX_DURATION_S):
         "bassi": _smussa(bassi),
         "medi": _smussa(medi),
         "alti": _smussa(alti),
+        # quote di dominanza (sommano a 1 ad ogni frame) usate SOLO per il
+        # mix colore bassi/medi/alti (_colore_miscelato) — vedi nota in
+        # _bande_spettrali sul perche' non si possono riusare bassi/medi/alti
+        "quota_bassi": _smussa(quota_bassi),
+        "quota_medi": _smussa(quota_medi),
+        "quota_alti": _smussa(quota_alti),
         "spettro": spettro,
         "spettro_classe": spettro_classe,
         "presenza": presenza,
@@ -301,26 +327,32 @@ def _parametri_da_audio(feat, i, t_frame, fps, reattivita=1.0):
 
     # il gate di presenza azzera quasi del tutto ampiezza e luminosita' nel
     # silenzio: l'animazione si raccoglie a un punto e sfuma via con la scia,
-    # invece di continuare a disegnare a meta' intensita' come prima
-    fattore_ampiezza = np.clip((0.15 + 0.85 * energia) * respiro, 0.03, 2.0) * presenza
+    # invece di continuare a disegnare a meta' intensita' come prima.
+    # Guadagno alzato rispetto alla versione precedente (0.15+0.85*energia,
+    # che a energia=1 arrivava solo a ~1.0 pur avendo un tetto a 2.0): con
+    # un'escursione piu' ampia i passaggi piano/forte del brano si vedono
+    # davvero nell'ampiezza del disegno, non solo in una leggera variazione
+    fattore_ampiezza = np.clip((0.10 + 1.6 * energia) * respiro, 0.03, 2.0) * presenza
 
-    k1 = np.clip(2.0 + (3.0 * centroid + 2.0 * alti) * reattivita, 2.0, 9.0)   # timbro/alti
-    k2 = np.clip(2.0 + 3.0 * medi * reattivita, 2.0, 9.0)                       # medi
+    k1 = np.clip(2.0 + (4.0 * centroid + 3.5 * alti) * reattivita, 2.0, 9.0)   # timbro/alti
+    k2 = np.clip(2.0 + 4.0 * medi * reattivita, 2.0, 9.0)                       # medi
 
     # per il pattern Fioritura (polare) le due componenti r e a devono condividere
     # la STESSA frequenza secondaria (come nel riferimento BASIC originale,
     # k=3.5 fisso per entrambe): usare due k diversi rompe la correlazione
     # armonica e trasforma i petali puliti in un groviglio denso stile Lissajous
-    k_loto = np.clip(2.6 + (1.2 * centroid + 0.8 * alti + 0.6 * medi) * reattivita, 2.2, 5.2)
+    k_loto = np.clip(2.6 + (1.6 * centroid + 1.1 * alti + 0.8 * medi) * reattivita, 2.2, 5.2)
 
-    intensita = np.clip(0.88 + 0.12 * onset, 0.5, 1.0) * presenza   # baseline alta a volume
-                                                                       # normale, ma azzerata
-                                                                       # dal gate nel silenzio
+    # baseline abbassata (era 0.88, escursione solo 0.12) cosi' gli attacchi
+    # (onset) producono una variazione di luminosita' chiaramente visibile
+    # invece che impercettibile, restando comunque azzerata dal gate nel
+    # silenzio
+    intensita = np.clip(0.55 + 0.45 * onset, 0.35, 1.0) * presenza
     return fattore_ampiezza, k1, k2, k_loto, onset, intensita, velocita
 
 
 def disegna_ellisse(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
-                     colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="", dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False):
+                     colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="", dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
     """Pattern cartesiano: x=f(t2), y=f(t1). Scala anisotropica (raggio_x/
     raggio_y separati) per riempire il fotogramma invece di restare confinato
     al centro — reinterpretazione mia rispetto al riferimento (che usava un
@@ -352,7 +384,7 @@ def disegna_ellisse(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore
 
 
 def disegna_loto(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
-                  colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="", dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False):
+                  colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="", dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
     """Pattern polare: r=f(t2), a=f(t1), x=r*cos(a), y=r*sin(a).
     r e a condividono la stessa frequenza secondaria k (come nel BASIC
     originale) per mantenere la simmetria a petali. A differenza
@@ -403,7 +435,7 @@ def disegna_loto(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_ba
 
 
 def disegna_pulviscolo(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
-                        colore_alti, t1_arr, fps, reattivita=1.0, spessore=1, stato=None, frase="", dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False):
+                        colore_alti, t1_arr, fps, reattivita=1.0, spessore=1, stato=None, frase="", dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
     """Struttura radicalmente diversa dalle altre due: una spirale di
     polvere che si espande dal centro verso il bordo (non ellissi chiuse
     ne' petali), pilotata dall'audio. Il numero di giri della spirale
@@ -454,7 +486,7 @@ def disegna_pulviscolo(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, col
 
 
 def disegna_graffio(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
-                     colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="", dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False):
+                     colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="", dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
     """Random walk di segmenti brevi che vaga per il fotogramma con
     teletrasporto ai bordi (wrap-around) — ispirato a un terzo riferimento
     BASIC che usa RANDOM invece di funzioni trigonometriche. A differenza
@@ -503,7 +535,7 @@ def disegna_graffio(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore
 
 
 def disegna_sismografo(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
-                        colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="", dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False):
+                        colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="", dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
     """Spectrum analyzer: barre verticali FERME in posizione orizzontale
     (non scorrono lateralmente) — ogni barra rappresenta una banda di
     frequenza log-spaziata (come un equalizzatore reale, precalcolata una
@@ -549,7 +581,7 @@ def disegna_sismografo(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, col
 
 
 def disegna_julia(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
-                   colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="", dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False):
+                   colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="", dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
     """Insieme di Julia (frattale nel piano complesso: z=z^2+c iterato per
     ogni punto), animato facendo ruotare la costante c nel tempo in base
     all'audio — piccole variazioni di c producono forme del frattale
@@ -601,15 +633,24 @@ def disegna_julia(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_b
     campo_u8 = (valore * 255).astype(np.uint8)
     campo_grande = cv2.resize(campo_u8, (w, h), interpolation=cv2.INTER_NEAREST)
 
+    # i punti che non scappano mai (interno dell'insieme, valore=0) devono
+    # mostrare il colore di SFONDO scelto dall'utente, non nero fisso: prima
+    # si moltiplicava solo il colore per il campo (0..1), quindi l'interno
+    # risultava sempre nero indipendentemente da colore_bg. Ora si interpola
+    # da colore_bg (valore=0) al colore di banda (valore=1), e il gate di
+    # silenzio (intensita) fonde ulteriormente verso colore_bg
     colore_arr = np.array(_colore_miscelato(feat, i, colore_bassi, colore_medi, colore_alti), dtype=np.float32)
-    campo_col = (campo_grande[..., None].astype(np.float32) / 255.0) * colore_arr * intensita
+    bg_arr = np.array(colore_bg, dtype=np.float32)
+    frac = campo_grande[..., None].astype(np.float32) / 255.0
+    mescolato = bg_arr + (colore_arr - bg_arr) * frac
+    campo_col = bg_arr + (mescolato - bg_arr) * intensita
     canvas[:] = np.clip(campo_col, 0, 255).astype(np.uint8)
 
     return canvas
 
 
 def disegna_aritmia(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
-                     colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="", dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False):
+                     colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="", dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
     """Variante di Sismografo: STESSO motore (spettro di frequenza fisso,
     140 barre in posizione orizzontale FERMA, nessuno storico che scorre),
     ma ogni barra ha una direzione (su o giu') decisa UNA SOLA VOLTA
@@ -701,7 +742,7 @@ def _punti_campione_lettera_pil(font_pil, carattere, n_punti):
 
 def disegna_iscrizione(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
                         colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
-                        dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False):
+                        dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
     """Una o piu' frasi (separate da a-capo) si materializzano in sequenza
     da uno sciame di particelle che convergono per "assemblare" ogni
     lettera (stile decrittazione/costruzione). Il completamento e' sempre
@@ -1062,7 +1103,7 @@ def disegna_iscrizione(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, col
 
 def disegna_sinapsi(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
                      colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
-                     dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False):
+                     dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
     """Rete di nodi che vagano lentamente per il fotogramma, connessi da
     linee dritte quando sono abbastanza vicini — come una rete neurale o
     un circuito che "si aggrappa" da solo. Struttura interamente diversa
@@ -1134,7 +1175,7 @@ def disegna_sinapsi(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore
 
 def disegna_labirinto(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
                        colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
-                       dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False):
+                       dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
     """Griglia di tasselli diagonali (stile Truchet): ogni cella disegna
     una linea "/" o "\\" — ispirato al celeberrimo one-liner Commodore 64
     BASIC "10 PRINT CHR$(205.5+RND(1));:GOTO 10" che genera labirinti
@@ -1192,7 +1233,7 @@ def disegna_labirinto(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colo
 
 def disegna_risonanza(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
                        colore_alti, t1_arr, fps, reattivita=1.0, spessore=1, stato=None, frase="",
-                       dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False):
+                       dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
     """Placca di Chladni: punti (come granelli di sabbia) si dispongono
     lungo le linee nodali di un'onda stazionaria — il principio fisico
     della cimatica (Ernst Chladni, XVIII sec.), "il suono reso visibile"
@@ -1251,7 +1292,7 @@ def disegna_risonanza(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colo
 
 def disegna_statica(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
                      colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
-                     dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False):
+                     dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
     """Automa cellulare elementare (Stephen Wolfram, 1983): una riga di
     celle 0/1 genera la riga successiva applicando una regola booleana ai
     tre vicini (sinistra, centro, destra) — da una condizione iniziale
@@ -1355,7 +1396,7 @@ def _ruota_3d(pts, ax, ay, az):
 
 def disegna_poliedro(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
                       colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
-                      dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False):
+                      dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
     """Poliedro 3D in wireframe (cubo/ottaedro/icosaedro) che ruota nello
     spazio, proiettato in 2D con la matematica classica delle matrici di
     rotazione e proiezione prospettica — l'effetto demoscene per
@@ -1420,7 +1461,7 @@ def disegna_poliedro(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, color
 
 def disegna_epicicli(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
                       colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
-                      dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False):
+                      dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
     """Epicicli di Fourier: una catena di cerchi che ruotano l'uno
     sull'altro (il centro di ogni cerchio e' la punta di quello
     precedente) — la rappresentazione geometrica letterale di una serie
@@ -1484,7 +1525,7 @@ def disegna_epicicli(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, color
 
 def disegna_plasma(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
                     colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
-                    dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False):
+                    dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
     """Effetto plasma: il classico effetto demoscene anni '80-'90, campo
     continuo generato sommando onde sinusoidali (piane e radiali) con fasi
     che scorrono nel tempo — matematica generica di dominio pubblico
@@ -1528,8 +1569,14 @@ def disegna_plasma(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_
     campo_u8 = np.clip(valore * 255, 0, 255).astype(np.uint8)
     campo_grande = cv2.resize(campo_u8, (w, h), interpolation=cv2.INTER_LINEAR)
 
+    # come in Julia: le zone del campo a valore basso vanno verso colore_bg
+    # (non nero fisso), cosi' lo sfondo scelto dall'utente e' sempre visibile
+    # nelle valli dell'interferenza, non solo un colore piatto ignorato
     colore_arr = np.array(colore_base, dtype=np.float32)
-    campo_col = (campo_grande[..., None].astype(np.float32) / 255.0) * colore_arr * intensita
+    bg_arr = np.array(colore_bg, dtype=np.float32)
+    frac = campo_grande[..., None].astype(np.float32) / 255.0
+    mescolato = bg_arr + (colore_arr - bg_arr) * frac
+    campo_col = bg_arr + (mescolato - bg_arr) * intensita
     canvas[:] = np.clip(campo_col, 0, 255).astype(np.uint8)
 
     return canvas
@@ -1592,6 +1639,7 @@ def genera_video(feat, path_out, width, height, colore_bg, colore_bassi, colore_
             t1_arr=t1_arr, fps=fps,
             reattivita=reattivita, spessore=spessore, stato=stato, frase=frase,
             dimensione_testo=dimensione_testo, font_scelto=font_scelto, lettere_extra=lettere_extra, sovrapponi=sovrapponi,
+            colore_bg=colore_bg,
         )
         canvas = canvas_u8.astype(np.float32)
 
@@ -1649,6 +1697,7 @@ def genera_anteprima(feat, width, height, colore_bg, colore_bassi, colore_medi, 
             t1_arr=t1_arr, fps=fps,
             reattivita=reattivita, spessore=spessore, stato=stato, frase=frase,
             dimensione_testo=dimensione_testo, font_scelto=font_scelto, lettere_extra=lettere_extra, sovrapponi=sovrapponi,
+            colore_bg=colore_bg,
         )
         canvas = canvas_u8.astype(np.float32)
 
