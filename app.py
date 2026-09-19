@@ -42,7 +42,7 @@ RISOLUZIONI = {
     "1:1   (720x720)": (720, 720),
 }
 
-FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)", "Plasma (interferenza)", "Cometa (starfield prospettico)", "Magma (metaballs)"]
+FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)", "Plasma (interferenza)", "Cometa (starfield prospettico)", "Magma (metaballs)", "Mosaico (celle di Voronoi)"]
 
 # font veri (TTF) per "Iscrizione" — cartella "fonts/" accanto a questo script.
 # Se mancante, l'app ripiega automaticamente sui font Hershey di OpenCV
@@ -1789,6 +1789,103 @@ def disegna_magma(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_b
     return canvas
 
 
+def disegna_mosaico(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                     colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
+                     dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
+    """Mosaico di Voronoi: N semi si muovono lentamente nel piano; ogni pixel
+    prende il colore del seme piu' vicino, dividendo il fotogramma in celle
+    poligonali che cambiano forma nel tempo — la prima forma "a regioni" del
+    catalogo, non piu' punti/linee/curve/campi continui. I semi sono divisi
+    in tre gruppi bassi/medi/alti come in Magma, ma qui i confini tra celle
+    sono netti (evidenziati con una linea di contrasto, tanto piu' sottile e
+    nitida quanto piu' forte e' l'attacco del momento — sugli onset il
+    mosaico si "irrigidisce"). Tecnica classica di computer graphics
+    (diagramma di Voronoi, Georgy Voronoy 1908), non presente nei
+    riferimenti BASIC originali. Calcolato a risoluzione ridotta e
+    ingrandito con interpolazione NEAREST (i confini delle celle devono
+    restare netti, non sfumare come in Magma/Plasma)."""
+    fattore, _k1, _k2, _k_loto, onset, intensita, velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    _ = fattore
+
+    h, w = canvas.shape[:2]
+    n_tot = max(6, len(t1_arr))
+
+    if stato is None:
+        stato = {}
+    if "mos_pos" not in stato or len(stato["mos_pos"]) != n_tot:
+        rng = np.random.default_rng(507)
+        stato["mos_pos"] = rng.uniform(-0.85, 0.85, (n_tot, 2))
+        angoli = rng.uniform(0, 2 * np.pi, n_tot)
+        vel_scala = rng.uniform(0.0015, 0.004, n_tot)
+        stato["mos_vel"] = np.stack([np.cos(angoli), np.sin(angoli)], axis=1) * vel_scala[:, None]
+        terzo = n_tot // 3
+        gruppo = np.zeros(n_tot, dtype=np.int32)
+        gruppo[terzo:2 * terzo] = 1
+        gruppo[2 * terzo:] = 2
+        rng.shuffle(gruppo)
+        stato["mos_gruppo"] = gruppo
+
+    pos = stato["mos_pos"]
+    vel = stato["mos_vel"]
+    gruppo = stato["mos_gruppo"]
+
+    # deriva dei semi: velocita' legata al BPM, rimbalzo elastico ai margini
+    pos = pos + vel * velocita
+    rimbalzo_x = np.abs(pos[:, 0]) > 1.0
+    rimbalzo_y = np.abs(pos[:, 1]) > 1.0
+    vel[rimbalzo_x, 0] *= -1
+    vel[rimbalzo_y, 1] *= -1
+    pos = np.clip(pos, -1.0, 1.0)
+    stato["mos_pos"] = pos
+    stato["mos_vel"] = vel
+
+    px_i = cx + pos[:, 0] * raggio_x
+    py_i = cy + pos[:, 1] * raggio_y
+
+    ris_w = max(100, w // 5)
+    ris_h = max(56, h // 5)
+    xs_lin = np.linspace(0, w, ris_w, dtype=np.float32)
+    ys_lin = np.linspace(0, h, ris_h, dtype=np.float32)
+    grid_x, grid_y = np.meshgrid(xs_lin, ys_lin)
+
+    dx = grid_x[None, :, :] - px_i[:, None, None].astype(np.float32)
+    dy = grid_y[None, :, :] - py_i[:, None, None].astype(np.float32)
+    dist2 = dx * dx + dy * dy   # shape (N, ris_h, ris_w)
+
+    ordine = np.argsort(dist2, axis=0)
+    idx_vicino = ordine[0]
+    idx_secondo = ordine[1]
+    dist_vicino = np.take_along_axis(dist2, idx_vicino[None, :, :], axis=0)[0]
+    dist_secondo = np.take_along_axis(dist2, idx_secondo[None, :, :], axis=0)[0]
+    gruppo_pixel = gruppo[idx_vicino]
+
+    colore_arr = np.zeros((ris_h, ris_w, 3), dtype=np.float32)
+    for g, colore_g in enumerate((colore_bassi, colore_medi, colore_alti)):
+        colore_arr[gruppo_pixel == g] = np.array(colore_g, dtype=np.float32)
+
+    # confine di cella: dove la distanza dal semee piu' vicino e dal secondo
+    # sono quasi uguali. Soglia legata all'onset: sugli attacchi i confini si
+    # fanno piu' sottili e netti, nel resto del tempo restano piu' spessi
+    scala_confine = min(w, h) / np.sqrt(n_tot)
+    margine = np.sqrt(np.maximum(dist_secondo - dist_vicino, 0.0))
+    soglia_confine = (0.05 + 0.06 * (1.0 - onset)) * scala_confine
+    e_confine = margine < soglia_confine
+
+    # colore del confine per contrasto (chiaro su sfondo scuro, scuro su
+    # sfondo chiaro), cosi' resta visibile qualunque sfondo scelga l'utente
+    colore_confine = np.array((255, 255, 255) if sum(colore_bg) < 380 else (0, 0, 0), dtype=np.float32)
+    colore_arr[e_confine] = colore_arr[e_confine] * 0.25 + colore_confine * 0.75
+
+    bg_arr = np.array(colore_bg, dtype=np.float32)
+    finale = bg_arr + (colore_arr - bg_arr) * intensita
+    campo_grande = cv2.resize(finale, (w, h), interpolation=cv2.INTER_NEAREST)
+    canvas[:] = np.clip(campo_grande, 0, 255).astype(np.uint8)
+
+    return canvas
+
+
 MOTORI = {
     "Deriva (cartesiana)": {"funzione": disegna_ellisse, "n_step": 900, "fade": 0.90},
     "Fioritura (polare)": {"funzione": disegna_loto, "n_step": 3300, "fade": 0.80},
@@ -1807,6 +1904,7 @@ MOTORI = {
     "Plasma (interferenza)": {"funzione": disegna_plasma, "n_step": 900, "fade": 0.0},
     "Cometa (starfield prospettico)": {"funzione": disegna_cometa, "n_step": 220, "fade": 0.85},
     "Magma (metaballs)": {"funzione": disegna_magma, "n_step": 24, "fade": 0.0},
+    "Mosaico (celle di Voronoi)": {"funzione": disegna_mosaico, "n_step": 20, "fade": 0.0},
 }
 
 
