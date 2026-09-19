@@ -42,7 +42,7 @@ RISOLUZIONI = {
     "1:1   (720x720)": (720, 720),
 }
 
-FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)", "Plasma (interferenza)"]
+FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)", "Plasma (interferenza)", "Cometa (starfield prospettico)"]
 
 # font veri (TTF) per "Iscrizione" — cartella "fonts/" accanto a questo script.
 # Se mancante, l'app ripiega automaticamente sui font Hershey di OpenCV
@@ -1582,6 +1582,106 @@ def disegna_plasma(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_
     return canvas
 
 
+def disegna_cometa(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                    colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
+                    dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
+    """Starfield prospettico: ogni stella ha una direzione fissa nel piano
+    (scelta una sola volta, in stato) e una profondita' z che diminuisce nel
+    tempo, cosi' la stella si avvicina alla camera come nei classici
+    starfield demoscene (proiezione prospettica elementare x/z, y/z). Quando
+    z scende sotto una soglia la stella "rinasce" lontana con una nuova
+    direzione casuale, dando un flusso infinito. Struttura radicalmente
+    diversa da Pulviscolo (spirale piatta, senza vera terza dimensione): qui
+    e' la profondita' a pilotare sia la posizione a schermo sia la
+    dimensione/luminosita' di ogni stella (piu' vicina = piu' grande e
+    luminosa, come un vero avvicinamento prospettico)."""
+    fattore, _k1, _k2, _k_loto, _onset, intensita, velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    alti = feat["alti"][i] * reattivita
+    presenza = feat["presenza"][i]
+    h, w = canvas.shape[:2]
+    n_stelle = max(20, len(t1_arr))
+
+    def _rinasci(n, rng):
+        angoli = rng.uniform(0, 2 * np.pi, n)
+        raggi = rng.uniform(0.15, 1.0, n)
+        direz = np.stack([np.cos(angoli), np.sin(angoli)], axis=1) * raggi[:, None]
+        return direz
+
+    if stato is None:
+        stato = {}
+    if "com_dir" not in stato or len(stato["com_dir"]) != n_stelle:
+        rng = np.random.default_rng(507)
+        stato["com_dir"] = _rinasci(n_stelle, rng)
+        stato["com_z"] = rng.uniform(0.1, 1.0, n_stelle)
+        # ordine fisso di attivazione: a bassa energia si accendono solo le
+        # prime N di questa permutazione, ad alta energia tutte -- da' un
+        # numero di stelle visibili che segue davvero l'energia del brano,
+        # senza dover ridimensionare gli array ad ogni frame
+        stato["com_ordine"] = rng.permutation(n_stelle)
+        stato["com_prev_xy"] = None
+        stato["com_rng"] = rng
+
+    dir_ = stato["com_dir"]
+    z = stato["com_z"]
+    rng = stato["com_rng"]
+
+    # velocita' di avvicinamento ancorata al BPM e rinforzata dall'energia
+    # (fattore incorpora gia' il gate di silenzio: nel silenzio le stelle
+    # quasi si fermano invece di continuare a sfrecciare)
+    dz = (0.006 + 0.03 * np.clip(fattore, 0.0, 1.5)) * velocita
+    z = z - dz
+    rinate = z <= 0.05
+    if rinate.any():
+        n_rin = int(rinate.sum())
+        dir_[rinate] = _rinasci(n_rin, rng)
+        z[rinate] = 1.0
+    stato["com_z"] = z
+    stato["com_dir"] = dir_
+
+    scala = min(raggio_x, raggio_y) * 1.6
+    xs = cx + (dir_[:, 0] / z) * scala
+    ys = cy + (dir_[:, 1] / z) * scala
+
+    # frazione di stelle attive: segue energia + gate di presenza, non un
+    # numero fisso -- nel silenzio quasi tutte spente, a piena energia tutte
+    frazione_attiva = np.clip(0.15 + 0.85 * fattore, 0.05, 1.0) * presenza
+    n_attive = max(1, int(n_stelle * frazione_attiva))
+    attive = np.zeros(n_stelle, dtype=bool)
+    attive[stato["com_ordine"][:n_attive]] = True
+
+    colore_base = _colore_miscelato(feat, i, colore_bassi, colore_medi, colore_alti)
+    prev_xy = stato["com_prev_xy"]
+    if prev_xy is None or len(prev_xy) != n_stelle:
+        prev_xy = np.stack([xs, ys], axis=1)
+
+    for k in range(n_stelle):
+        if not attive[k]:
+            continue
+        x, y = xs[k], ys[k]
+        if not (0 <= x < w and 0 <= y < h):
+            continue
+        vicinanza = np.clip(1.0 - z[k], 0.0, 1.0)   # piu' vicina alla camera = piu' grande/luminosa
+        spess_stella = max(1, int(spessore * (0.5 + 1.5 * vicinanza)))
+        intens_stella = intensita * (0.35 + 0.65 * vicinanza)
+        colore = tuple(min(int(c * intens_stella), 255) for c in colore_base)
+
+        px, py = prev_xy[k]
+        salto = abs(x - px) + abs(y - py)
+        # scia (motion blur) legata agli alti: piu' il brano e' brillante,
+        # piu' lunga la striscia -- ma non se la stella e' appena rinata
+        # (altrimenti si vede un segmento che attraversa tutto il frame)
+        if not rinate[k] and alti > 0.05 and 1 < salto < w * 0.3 and 0 <= px < w and 0 <= py < h:
+            cv2.line(canvas, (int(px), int(py)), (int(x), int(y)), colore, spess_stella, cv2.LINE_AA)
+        else:
+            cv2.circle(canvas, (int(x), int(y)), spess_stella, colore, -1, cv2.LINE_AA)
+
+    stato["com_prev_xy"] = np.stack([xs, ys], axis=1)
+
+    return canvas
+
+
 MOTORI = {
     "Deriva (cartesiana)": {"funzione": disegna_ellisse, "n_step": 900, "fade": 0.90},
     "Fioritura (polare)": {"funzione": disegna_loto, "n_step": 3300, "fade": 0.80},
@@ -1598,6 +1698,7 @@ MOTORI = {
     "Poliedro (wireframe)": {"funzione": disegna_poliedro, "n_step": 100, "fade": 0.35},
     "Epicicli (Fourier)": {"funzione": disegna_epicicli, "n_step": 100, "fade": 0.0},
     "Plasma (interferenza)": {"funzione": disegna_plasma, "n_step": 900, "fade": 0.0},
+    "Cometa (starfield prospettico)": {"funzione": disegna_cometa, "n_step": 220, "fade": 0.85},
 }
 
 
