@@ -42,7 +42,7 @@ RISOLUZIONI = {
     "1:1   (720x720)": (720, 720),
 }
 
-FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)", "Plasma (interferenza)", "Cometa (starfield prospettico)"]
+FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)", "Plasma (interferenza)", "Cometa (starfield prospettico)", "Magma (metaballs)"]
 
 # font veri (TTF) per "Iscrizione" — cartella "fonts/" accanto a questo script.
 # Se mancante, l'app ripiega automaticamente sui font Hershey di OpenCV
@@ -1682,6 +1682,113 @@ def disegna_cometa(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_
     return canvas
 
 
+def disegna_magma(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                   colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
+                   dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
+    """Metaballs / campi fusi: N sorgenti puntiformi generano ciascuna un
+    campo scalare che decade con l'inverso del quadrato della distanza; la
+    somma dei campi disegna macchie che si fondono e si separano come gocce
+    di lava, invece di semplici cerchi sovrapposti. Le sorgenti sono divise
+    in tre gruppi (bassi/medi/alti): il raggio di ciascun gruppo segue
+    l'energia della propria banda, e il colore che quel gruppo genera e' il
+    colore di banda corrispondente — cosi' la STRUTTURA delle macchie (non
+    solo la luminosita') mostra quale frequenza domina in quel momento.
+    Reinterpretazione libera: le metaballs sono una tecnica di computer
+    graphics classica (Jim Blinn, 1982), non presente nei riferimenti BASIC
+    originali. Calcolato a risoluzione ridotta e poi ingrandito con
+    interpolazione lineare, per restare performante — stesso principio di
+    Frontiera e Plasma."""
+    fattore, k1, _k2, _k_loto, onset, intensita, velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    bassi = feat["bassi"][i] * reattivita
+    medi = feat["medi"][i] * reattivita
+    alti = feat["alti"][i] * reattivita
+    _ = fattore, k1  # non usati direttamente qui: energia arriva gia' per banda
+
+    h, w = canvas.shape[:2]
+    n_tot = max(6, len(t1_arr))
+
+    if stato is None:
+        stato = {}
+    if "mag_pos" not in stato or len(stato["mag_pos"]) != n_tot:
+        rng = np.random.default_rng(507)
+        stato["mag_pos"] = rng.uniform(-0.7, 0.7, (n_tot, 2))
+        angoli = rng.uniform(0, 2 * np.pi, n_tot)
+        vel_scala = rng.uniform(0.002, 0.006, n_tot)
+        stato["mag_vel"] = np.stack([np.cos(angoli), np.sin(angoli)], axis=1) * vel_scala[:, None]
+        terzo = n_tot // 3
+        gruppo = np.zeros(n_tot, dtype=np.int32)
+        gruppo[terzo:2 * terzo] = 1
+        gruppo[2 * terzo:] = 2
+        rng.shuffle(gruppo)
+        stato["mag_gruppo"] = gruppo
+        # variazione individuale di raggio: da' organicita', non tutte le
+        # macchie di uno stesso gruppo sono identiche
+        stato["mag_var"] = rng.uniform(0.75, 1.3, n_tot)
+
+    pos = stato["mag_pos"]
+    vel = stato["mag_vel"]
+    gruppo = stato["mag_gruppo"]
+    var = stato["mag_var"]
+
+    # deriva delle sorgenti: velocita' scalata dal BPM (brani rapidi = macchie
+    # piu' inquiete), rimbalzo elastico ai margini dell'area ellittica cosi'
+    # le sorgenti non escono mai dal quadro
+    pos = pos + vel * velocita
+    rimbalzo_x = np.abs(pos[:, 0]) > 1.0
+    rimbalzo_y = np.abs(pos[:, 1]) > 1.0
+    vel[rimbalzo_x, 0] *= -1
+    vel[rimbalzo_y, 1] *= -1
+    pos = np.clip(pos, -1.0, 1.0)
+    stato["mag_pos"] = pos
+    stato["mag_vel"] = vel
+
+    banda_per_gruppo = np.array([bassi, medi, alti], dtype=np.float32)
+    raggio_base = min(raggio_x, raggio_y) * 0.24
+    raggio_gruppo = raggio_base * (0.45 + 1.35 * np.clip(banda_per_gruppo, 0.0, 1.4))
+    raggio_pix = raggio_gruppo[gruppo] * var
+
+    px_i = cx + pos[:, 0] * raggio_x
+    py_i = cy + pos[:, 1] * raggio_y
+
+    # risoluzione di calcolo ridotta, legata alle dimensioni del canvas (qui
+    # non alla densita': t1_arr controlla il NUMERO di sorgenti, non il
+    # dettaglio del campo)
+    ris_w = max(90, w // 6)
+    ris_h = max(50, h // 6)
+    xs_lin = np.linspace(0, w, ris_w, dtype=np.float32)
+    ys_lin = np.linspace(0, h, ris_h, dtype=np.float32)
+    grid_x, grid_y = np.meshgrid(xs_lin, ys_lin)
+
+    dx = grid_x[None, :, :] - px_i[:, None, None].astype(np.float32)
+    dy = grid_y[None, :, :] - py_i[:, None, None].astype(np.float32)
+    dist2 = dx * dx + dy * dy
+    r2 = (raggio_pix.astype(np.float32) ** 2)[:, None, None]
+    campo_i = r2 / (dist2 + r2 * 0.25 + 1.0)      # falloff inverso al quadrato, smorzato vicino al centro
+    campo = campo_i.sum(axis=0)
+
+    colore_arr = np.zeros((ris_h, ris_w, 3), dtype=np.float32)
+    for g, colore_g in enumerate((colore_bassi, colore_medi, colore_alti)):
+        maschera = gruppo == g
+        if maschera.any():
+            colore_arr += campo_i[maschera].sum(axis=0)[..., None] * np.array(colore_g, dtype=np.float32)
+    colore_arr /= (campo[..., None] + 1e-6)
+
+    # soglia leggermente "respirante" sugli attacchi: sugli onset le macchie
+    # si allargano un istante, invece di restare a dimensione fissa
+    soglia = 1.0 - 0.15 * onset
+    frac = np.clip((campo - soglia * 0.5) / (soglia * 0.9), 0.0, 1.0)[..., None]
+
+    bg_arr = np.array(colore_bg, dtype=np.float32)
+    mescolato = bg_arr + (colore_arr - bg_arr) * frac
+    finale = bg_arr + (mescolato - bg_arr) * intensita
+    campo_grande = cv2.resize(finale, (w, h), interpolation=cv2.INTER_LINEAR)
+    canvas[:] = np.clip(campo_grande, 0, 255).astype(np.uint8)
+
+    return canvas
+
+
 MOTORI = {
     "Deriva (cartesiana)": {"funzione": disegna_ellisse, "n_step": 900, "fade": 0.90},
     "Fioritura (polare)": {"funzione": disegna_loto, "n_step": 3300, "fade": 0.80},
@@ -1699,6 +1806,7 @@ MOTORI = {
     "Epicicli (Fourier)": {"funzione": disegna_epicicli, "n_step": 100, "fade": 0.0},
     "Plasma (interferenza)": {"funzione": disegna_plasma, "n_step": 900, "fade": 0.0},
     "Cometa (starfield prospettico)": {"funzione": disegna_cometa, "n_step": 220, "fade": 0.85},
+    "Magma (metaballs)": {"funzione": disegna_magma, "n_step": 24, "fade": 0.0},
 }
 
 
