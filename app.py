@@ -42,7 +42,7 @@ RISOLUZIONI = {
     "1:1   (720x720)": (720, 720),
 }
 
-FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)", "Plasma (interferenza)", "Cometa (starfield prospettico)", "Magma (metaballs)", "Mosaico (celle di Voronoi)", "Galleria (tunnel prospettico)"]
+FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)", "Plasma (interferenza)", "Cometa (starfield prospettico)", "Magma (metaballs)", "Mosaico (celle di Voronoi)", "Galleria (tunnel prospettico)", "Braci (fuoco algoritmico)"]
 
 # font veri (TTF) per "Iscrizione" — cartella "fonts/" accanto a questo script.
 # Se mancante, l'app ripiega automaticamente sui font Hershey di OpenCV
@@ -1955,6 +1955,85 @@ def disegna_galleria(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, color
     return canvas
 
 
+def disegna_braci(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                   colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
+                   dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
+    """Fuoco algoritmico: il classico fire-effect DOS (righe di "calore" che
+    si propagano dal basso verso l'alto, mediando i vicini e raffreddandosi
+    leggermente ad ogni passo — tecnica nota almeno dai primi anni '90,
+    demoscene e articoli come quelli di Bret Mulvey). Il calore viene
+    iniettato alla base in proporzione all'energia del brano, il
+    raffreddamento (quanto la fiamma si "spezza"/diventa nervosa risalendo)
+    segue gli alti, e la mappatura calore->colore usa i TRE colori di banda
+    scelti dall'utente come gradiente (sfondo -> bassi -> medi -> alti)
+    invece della classica palette rosso-giallo-bianco. Diverso da tutto il
+    resto del catalogo: e' l'unico motore generativo per DIFFUSIONE
+    dal basso (Statica e' rule-based su automa, non diffusione continua).
+    Calcolato a risoluzione ridotta con stato persistente (il calore deve
+    accumularsi frame dopo frame, non puo' essere ricalcolato da zero ad
+    ogni frame) e ingrandito con interpolazione lineare."""
+    fattore, _k1, _k2, _k_loto, onset, intensita, velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    energia = np.clip(feat["rms"][i] * 0.6 + feat["bassi"][i] * 0.4, 0.0, 1.4) * reattivita
+    alti = feat["alti"][i] * reattivita
+    presenza = feat["presenza"][i]
+    _ = fattore, onset, velocita
+
+    h, w = canvas.shape[:2]
+    ris_w = max(70, int(np.sqrt(len(t1_arr)) * 5))
+    ris_h = max(50, int(ris_w * h / w))
+
+    if stato is None:
+        stato = {}
+    if "bra_calore" not in stato or stato["bra_calore"].shape != (ris_h, ris_w):
+        stato["bra_calore"] = np.zeros((ris_h, ris_w), dtype=np.float32)
+        stato["bra_rng"] = np.random.default_rng(507)
+
+    calore = stato["bra_calore"]
+    rng = stato["bra_rng"]
+
+    # iniezione di calore alla base: poche righe finali, ampiezza legata
+    # all'energia complessiva e al gate di presenza (nel silenzio il fuoco
+    # si spegne quasi del tutto, invece di continuare a bruciare a meta')
+    n_righe_base = max(1, ris_h // 12)
+    ampiezza_iniezione = np.clip(0.35 + 0.9 * energia, 0.05, 1.6) * presenza
+    calore[-n_righe_base:, :] = rng.uniform(0.0, ampiezza_iniezione, (n_righe_base, ris_w))
+
+    # raffreddamento: piu' alti = fiamma piu' nervosa/frastagliata (si
+    # raffredda piu' in fretta risalendo), piu' bassi = fiamma piu' piena
+    raffreddamento = np.clip(0.90 - 0.22 * alti, 0.60, 0.96)
+
+    sinistra = np.roll(calore, 1, axis=1)
+    destra = np.roll(calore, -1, axis=1)
+    sotto1 = np.roll(calore, -1, axis=0)
+    sotto2 = np.roll(calore, -2, axis=0)
+    nuovo = (sotto1 + sinistra + destra + sotto2) * 0.25 * raffreddamento
+    nuovo[-n_righe_base:, :] = calore[-n_righe_base:, :]   # le righe di base restano quelle appena iniettate
+    calore = np.clip(nuovo, 0.0, 1.4)
+    stato["bra_calore"] = calore
+
+    # mappatura calore -> colore: gradiente a 3 tappe attraverso i colori di
+    # banda scelti dall'utente, invece della classica palette rosso-giallo
+    t_norm = np.clip(calore / 1.2, 0.0, 1.0)
+    bg_arr = np.array(colore_bg, dtype=np.float32)
+    cb = np.array(colore_bassi, dtype=np.float32)
+    cm = np.array(colore_medi, dtype=np.float32)
+    ca = np.array(colore_alti, dtype=np.float32)
+
+    seg = t_norm * 3.0
+    f0 = np.clip(seg, 0.0, 1.0)[..., None]
+    f1 = np.clip(seg - 1.0, 0.0, 1.0)[..., None]
+    f2 = np.clip(seg - 2.0, 0.0, 1.0)[..., None]
+    colore_arr = bg_arr + (cb - bg_arr) * f0 + (cm - cb) * f1 + (ca - cm) * f2
+
+    finale = bg_arr + (colore_arr - bg_arr) * intensita
+    campo_grande = cv2.resize(finale, (w, h), interpolation=cv2.INTER_LINEAR)
+    canvas[:] = np.clip(campo_grande, 0, 255).astype(np.uint8)
+
+    return canvas
+
+
 MOTORI = {
     "Deriva (cartesiana)": {"funzione": disegna_ellisse, "n_step": 900, "fade": 0.90},
     "Fioritura (polare)": {"funzione": disegna_loto, "n_step": 3300, "fade": 0.80},
@@ -1975,6 +2054,7 @@ MOTORI = {
     "Magma (metaballs)": {"funzione": disegna_magma, "n_step": 24, "fade": 0.0},
     "Mosaico (celle di Voronoi)": {"funzione": disegna_mosaico, "n_step": 20, "fade": 0.0},
     "Galleria (tunnel prospettico)": {"funzione": disegna_galleria, "n_step": 900, "fade": 0.0},
+    "Braci (fuoco algoritmico)": {"funzione": disegna_braci, "n_step": 900, "fade": 0.0},
 }
 
 
