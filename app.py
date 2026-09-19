@@ -42,7 +42,7 @@ RISOLUZIONI = {
     "1:1   (720x720)": (720, 720),
 }
 
-FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)", "Plasma (interferenza)", "Cometa (starfield prospettico)", "Magma (metaballs)", "Mosaico (celle di Voronoi)"]
+FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)", "Plasma (interferenza)", "Cometa (starfield prospettico)", "Magma (metaballs)", "Mosaico (celle di Voronoi)", "Galleria (tunnel prospettico)"]
 
 # font veri (TTF) per "Iscrizione" — cartella "fonts/" accanto a questo script.
 # Se mancante, l'app ripiega automaticamente sui font Hershey di OpenCV
@@ -1886,6 +1886,75 @@ def disegna_mosaico(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore
     return canvas
 
 
+@functools.lru_cache(maxsize=8)
+def _lookup_galleria(ris_w, ris_h, w, h, cx, cy, raggio_x, raggio_y):
+    """Lookup (raggio normalizzato, angolo) rispetto al centro, calcolato una
+    sola volta e cachato: non dipende dal tempo né dall'audio, solo dalle
+    dimensioni/centro del canvas (stesso principio usato per i solidi
+    platonici in _solido_cache). Alla base dell'effetto tunnel: ogni frame
+    riusa questa stessa griglia, cambia solo come viene "letta" (scroll,
+    rotazione, numero di spire)."""
+    xs = np.linspace(0, w, ris_w, dtype=np.float64)
+    ys = np.linspace(0, h, ris_h, dtype=np.float64)
+    grid_x, grid_y = np.meshgrid(xs, ys)
+    dx = (grid_x - cx) / raggio_x
+    dy = (grid_y - cy) / raggio_y
+    raggio_norm = np.sqrt(dx ** 2 + dy ** 2)
+    angolo = np.arctan2(dy, dx)
+    return raggio_norm, angolo
+
+
+def disegna_galleria(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                      colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
+                      dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
+    """Tunnel prospettico: lookup (raggio, angolo) rispetto al centro,
+    precalcolato una sola volta e cachato (_lookup_galleria, non dipende dal
+    tempo né dall'audio — stesso principio usato per i solidi di Poliedro),
+    usato per generare anelli concentrici a spirale che alternano colore_bg e
+    il colore di banda, scorrendo verso lo spettatore. Effetto BASIC/DOS
+    classico (rotozoom/tunnel), non presente nei riferimenti originali. Le
+    fasce sono binarie (dentro/fuori), non sfumate: qui non c'e'
+    interpolazione morbida come in Magma/Plasma, solo cambi netti, coerente
+    con l'estetica "Glitch Brutalista"."""
+    fattore, k1, k2, _k_loto, onset, intensita, velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    bassi = feat["bassi"][i] * reattivita
+    medi = feat["medi"][i] * reattivita
+    alti = feat["alti"][i] * reattivita
+    _ = fattore, k1, k2
+
+    h, w = canvas.shape[:2]
+    # risoluzione di calcolo ridotta, scalata dalla densita' (slider) tramite
+    # t1_arr — stesso principio di Frontiera: piu' densita' = piu' dettaglio
+    # (e piu' costo), non solo un numero di elementi ignorato
+    ris_w = max(80, int(np.sqrt(len(t1_arr)) * 6))
+    ris_h = max(45, int(ris_w * h / w))
+
+    raggio_norm, angolo = _lookup_galleria(ris_w, ris_h, w, h, cx, cy, raggio_x, raggio_y)
+
+    # numero di anelli -> bassi, numero di spire (twist) -> alti, rotazione
+    # continua -> medi (offset) + BPM (velocita' base), scroll verso lo
+    # spettatore -> BPM/energia con un balzo in avanti sugli attacchi
+    freq_anelli = 3.0 + 7.0 * np.clip(bassi, 0.0, 1.4)
+    n_spire = 3.0 + 7.0 * np.clip(alti, 0.0, 1.4)
+    rotazione = t_frame * (0.12 + 0.10 * reattivita) * velocita + medi * 1.4
+    scroll = t_frame * (0.10 + 0.16 * reattivita) * velocita + onset * 0.7
+
+    pattern = raggio_norm * freq_anelli - scroll + (angolo / (2 * np.pi)) * n_spire + rotazione
+    fascia = np.mod(np.floor(pattern), 2.0)
+
+    colore_base = np.array(_colore_miscelato(feat, i, colore_bassi, colore_medi, colore_alti), dtype=np.float32)
+    bg_arr = np.array(colore_bg, dtype=np.float32)
+    colore_piccolo = np.where(fascia[..., None] > 0.5, colore_base, bg_arr)
+    finale = bg_arr + (colore_piccolo - bg_arr) * intensita
+
+    campo_grande = cv2.resize(finale.astype(np.float32), (w, h), interpolation=cv2.INTER_NEAREST)
+    canvas[:] = np.clip(campo_grande, 0, 255).astype(np.uint8)
+
+    return canvas
+
+
 MOTORI = {
     "Deriva (cartesiana)": {"funzione": disegna_ellisse, "n_step": 900, "fade": 0.90},
     "Fioritura (polare)": {"funzione": disegna_loto, "n_step": 3300, "fade": 0.80},
@@ -1905,6 +1974,7 @@ MOTORI = {
     "Cometa (starfield prospettico)": {"funzione": disegna_cometa, "n_step": 220, "fade": 0.85},
     "Magma (metaballs)": {"funzione": disegna_magma, "n_step": 24, "fade": 0.0},
     "Mosaico (celle di Voronoi)": {"funzione": disegna_mosaico, "n_step": 20, "fade": 0.0},
+    "Galleria (tunnel prospettico)": {"funzione": disegna_galleria, "n_step": 900, "fade": 0.0},
 }
 
 
