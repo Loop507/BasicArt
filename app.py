@@ -42,7 +42,7 @@ RISOLUZIONI = {
     "1:1   (720x720)": (720, 720),
 }
 
-FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)", "Plasma (interferenza)", "Cometa (starfield prospettico)", "Magma (metaballs)", "Mosaico (celle di Voronoi)", "Galleria (tunnel prospettico)", "Braci (fuoco algoritmico)", "Vita (automa cellulare 2D)", "Morfogenesi (reazione-diffusione)", "Increspatura (onde d'impatto)", "Formica (automa di Langton)"]
+FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)", "Plasma (interferenza)", "Cometa (starfield prospettico)", "Magma (metaballs)", "Mosaico (celle di Voronoi)", "Galleria (tunnel prospettico)", "Braci (fuoco algoritmico)", "Vita (automa cellulare 2D)", "Morfogenesi (reazione-diffusione)", "Increspatura (onde d'impatto)", "Formica (automa di Langton)", "Pentola (sandpile)"]
 
 # font veri (TTF) per "Iscrizione" — cartella "fonts/" accanto a questo script.
 # Se mancante, l'app ripiega automaticamente sui font Hershey di OpenCV
@@ -2458,6 +2458,104 @@ def disegna_formica(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore
     return canvas
 
 
+def disegna_pentola(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                     colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
+                     dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
+    """Pentola: il modello del mucchio di sabbia (Bak-Tang-Wiesenfeld, 1987)
+    — criticita' auto-organizzata. Si versano granelli su una griglia;
+    quando una cella supera una soglia "frana", distribuendo un granello a
+    ciascun vicino, che a sua volta puo' franare — valanghe a catena di
+    dimensione imprevedibile, dalla piu' piccola alla piu' estesa. Diverso
+    da tutto il resto del catalogo, e NON e' aggregazione/crescita come
+    Fulmine (scartato in precedenza): qui la sabbia si ridistribuisce, non
+    si attacca — i granelli ai bordi cadono fuori dalla griglia e si
+    perdono, come nell'esperimento fisico originale. La vicinanza usata per
+    franare alterna il classico 4-vicini (soglia 4) e la variante 8-vicini
+    (soglia 8, entrambe note in letteratura) in base agli alti. Un flusso
+    costante di granelli cade al centro (l'esperimento classico) con
+    intensita' legata ai bassi; ogni attacco forte fa cadere una manciata
+    extra in un punto casuale, innescando una nuova valanga. Il numero di
+    passi di rilassamento per frame segue il BPM: le valanghe grandi si
+    propagano su piu' fotogrammi invece di risolversi tutte in uno solo."""
+    fattore, _k1, _k2, _k_loto, onset, intensita, velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    bassi = feat["bassi"][i] * reattivita
+    alti = feat["alti"][i] * reattivita
+    presenza = feat["presenza"][i]
+
+    h, w = canvas.shape[:2]
+    ris_w = max(60, int(np.sqrt(len(t1_arr)) * 4))
+    ris_h = max(34, int(ris_w * h / w))
+
+    if stato is None:
+        stato = {}
+    if "pen_grid" not in stato or stato["pen_grid"].shape != (ris_h, ris_w):
+        stato["pen_grid"] = np.zeros((ris_h, ris_w), dtype=np.int32)
+        stato["pen_rng"] = np.random.default_rng(507)
+        stato["pen_onset_prev"] = 0.0
+
+    grid = stato["pen_grid"]
+    rng = stato["pen_rng"]
+    onset_prev = stato["pen_onset_prev"]
+
+    usa_moore = alti > 0.5
+    soglia = 8 if usa_moore else 4
+    offsets = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    if usa_moore:
+        offsets += [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+    # flusso costante al centro (l'esperimento classico del mucchio di
+    # sabbia), intensita' legata ai bassi, azzerato nel silenzio
+    n_continuo = int(round(1 + 3 * np.clip(bassi, 0.0, 1.4))) if presenza > 0.1 else 0
+    if n_continuo:
+        grid[ris_h // 2, ris_w // 2] += n_continuo
+
+    # fronte di salita dell'onset: una manciata extra in un punto casuale,
+    # come un nuovo colpo che innesca una nuova valanga
+    scatta = (onset > 0.5) and (onset_prev <= 0.5)
+    stato["pen_onset_prev"] = float(onset)
+    if scatta:
+        py = int(rng.integers(ris_h // 6, ris_h - ris_h // 6))
+        px = int(rng.integers(ris_w // 6, ris_w - ris_w // 6))
+        grid[py, px] += int(round(15 + 15 * np.clip(fattore, 0.0, 1.5)))
+
+    # passi di rilassamento per frame: le valanghe grandi si propagano su
+    # piu' fotogrammi invece di risolversi tutte in un frame
+    max_passi = max(4, int(round(6 + 24 * velocita)))
+    for _ in range(max_passi):
+        n_topple = grid // soglia
+        if not n_topple.any():
+            break
+        resto = grid % soglia
+        pad = np.pad(n_topple, 1)
+        ricevuto = np.zeros_like(grid)
+        for dy, dx in offsets:
+            ricevuto += pad[1 + dy:1 + dy + ris_h, 1 + dx:1 + dx + ris_w]
+        grid = resto + ricevuto
+
+    stato["pen_grid"] = grid
+
+    # colore: gradiente a 3 tappe attraverso i colori di banda in base
+    # all'altezza della pila in quella cella, stesso stile di Braci
+    t_norm = np.clip(grid.astype(np.float32) / soglia, 0.0, 1.0)
+    bg_arr = np.array(colore_bg, dtype=np.float32)
+    cb = np.array(colore_bassi, dtype=np.float32)
+    cm = np.array(colore_medi, dtype=np.float32)
+    ca = np.array(colore_alti, dtype=np.float32)
+    seg = t_norm * 3.0
+    f0 = np.clip(seg, 0.0, 1.0)[..., None]
+    f1 = np.clip(seg - 1.0, 0.0, 1.0)[..., None]
+    f2 = np.clip(seg - 2.0, 0.0, 1.0)[..., None]
+    colore_arr = bg_arr + (cb - bg_arr) * f0 + (cm - cb) * f1 + (ca - cm) * f2
+
+    finale = bg_arr + (colore_arr - bg_arr) * intensita
+    campo_grande = cv2.resize(finale.astype(np.float32), (w, h), interpolation=cv2.INTER_NEAREST)
+    canvas[:] = np.clip(campo_grande, 0, 255).astype(np.uint8)
+
+    return canvas
+
+
 MOTORI = {
     "Deriva (cartesiana)": {"funzione": disegna_ellisse, "n_step": 900, "fade": 0.90},
     "Fioritura (polare)": {"funzione": disegna_loto, "n_step": 3300, "fade": 0.80},
@@ -2483,6 +2581,7 @@ MOTORI = {
     "Morfogenesi (reazione-diffusione)": {"funzione": disegna_morfogenesi, "n_step": 900, "fade": 0.0},
     "Increspatura (onde d'impatto)": {"funzione": disegna_increspatura, "n_step": 400, "fade": 0.25},
     "Formica (automa di Langton)": {"funzione": disegna_formica, "n_step": 900, "fade": 0.0},
+    "Pentola (sandpile)": {"funzione": disegna_pentola, "n_step": 900, "fade": 0.0},
 }
 
 
