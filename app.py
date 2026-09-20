@@ -42,7 +42,7 @@ RISOLUZIONI = {
     "1:1   (720x720)": (720, 720),
 }
 
-FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)", "Plasma (interferenza)", "Cometa (starfield prospettico)", "Magma (metaballs)", "Mosaico (celle di Voronoi)", "Galleria (tunnel prospettico)", "Braci (fuoco algoritmico)"]
+FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)", "Plasma (interferenza)", "Cometa (starfield prospettico)", "Magma (metaballs)", "Mosaico (celle di Voronoi)", "Galleria (tunnel prospettico)", "Braci (fuoco algoritmico)", "Vita (automa cellulare 2D)"]
 
 # font veri (TTF) per "Iscrizione" — cartella "fonts/" accanto a questo script.
 # Se mancante, l'app ripiega automaticamente sui font Hershey di OpenCV
@@ -2034,6 +2034,119 @@ def disegna_braci(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_b
     return canvas
 
 
+def disegna_vita(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                  colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
+                  dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
+    """Vita: l'automa cellulare di Conway (1970), ma bidimensionale — non una
+    riga come Statica, una vera griglia dove ogni cella nasce/sopravvive/
+    muore in base a quante vicine ha (8-connesse, topologia toroidale).
+    Genera macchie organiche che nascono, oscillano e si spengono, del tutto
+    diverso dal profilo a gradini di Statica. La regola attiva alterna fra
+    Conway classico (B3/S23) e HighLife (B36/S23, piu' caotica, produce
+    "replicatori") in base ai bassi; la velocita' di avanzamento (generazioni
+    al secondo) segue il BPM; una piccola probabilita' di mutazione casuale
+    per cella, legata agli alti, mantiene la griglia viva invece di farla
+    stabilizzare o spegnere troppo in fretta. Il colore di ogni cella dipende
+    dalla sua ETA' (generazioni consecutive di vita): nasce nel colore degli
+    alti, matura verso i medi, invecchia verso i bassi — un modo diverso di
+    leggere l'audio nell'immagine rispetto alla banda-per-gruppo usata in
+    Magma/Mosaico."""
+    fattore, _k1, _k2, _k_loto, onset, intensita, velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    bassi = feat["bassi"][i] * reattivita
+    alti = feat["alti"][i] * reattivita
+    presenza = feat["presenza"][i]
+    _ = fattore, onset
+
+    h, w = canvas.shape[:2]
+    ris_w = max(60, int(np.sqrt(len(t1_arr)) * 4))
+    ris_h = max(34, int(ris_w * h / w))
+
+    if stato is None:
+        stato = {}
+    if "vit_griglia" not in stato or stato["vit_griglia"].shape != (ris_h, ris_w):
+        rng = np.random.default_rng(507)
+        stato["vit_griglia"] = rng.uniform(0, 1, (ris_h, ris_w)) < 0.18
+        stato["vit_eta"] = np.zeros((ris_h, ris_w), dtype=np.float32)
+        stato["vit_progresso"] = 0.0
+        stato["vit_rng"] = rng
+
+    griglia = stato["vit_griglia"]
+    eta = stato["vit_eta"]
+    rng = stato["vit_rng"]
+
+    # velocita' di avanzamento: generazioni al secondo legate al BPM,
+    # accumulate in un contatore frazionario cosi' il ritmo resta fluido
+    # anche a fps alti o brani lenti
+    gen_per_secondo = (0.8 + 2.2 * reattivita) * velocita
+    stato["vit_progresso"] += gen_per_secondo / fps
+    passi = 0
+    while stato["vit_progresso"] >= 1.0 and passi < 4:
+        stato["vit_progresso"] -= 1.0
+        passi += 1
+
+    usa_highlife = bassi > 0.55
+
+    for _ in range(passi):
+        vicini = np.zeros(griglia.shape, dtype=np.int32)
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dy == 0 and dx == 0:
+                    continue
+                vicini += np.roll(np.roll(griglia, dy, axis=0), dx, axis=1)
+        nascita = (vicini == 3) | (usa_highlife & (vicini == 6))
+        sopravvive = griglia & ((vicini == 2) | (vicini == 3))
+        nuova = nascita | sopravvive
+
+        # mutazione casuale: piccola probabilita' per cella di invertire
+        # stato, legata agli alti -- mantiene la griglia viva invece di
+        # farla stabilizzare o spegnere del tutto
+        p_mutazione = 0.0008 + 0.006 * np.clip(alti, 0.0, 1.4)
+        flip = rng.uniform(0, 1, nuova.shape) < p_mutazione
+        nuova = nuova ^ flip
+
+        eta_nuova = np.zeros(eta.shape, dtype=np.float32)
+        vecchie_sopravvissute = sopravvive & nuova
+        eta_nuova[vecchie_sopravvissute] = eta[vecchie_sopravvissute] + 1
+        eta = eta_nuova
+        griglia = nuova
+
+    # se la popolazione si e' spenta quasi del tutto, la si "ri-accende" con
+    # un piccolo seme casuale -- ma solo con presenza audio, cosi' nel
+    # silenzio la griglia puo' restare vuota invece di riaccendersi da sola
+    popolazione = griglia.mean()
+    if popolazione < 0.01 and presenza > 0.15:
+        n_semi = max(3, int(griglia.size * 0.02))
+        idx_y = rng.integers(0, ris_h, n_semi)
+        idx_x = rng.integers(0, ris_w, n_semi)
+        griglia[idx_y, idx_x] = True
+        eta[idx_y, idx_x] = 0
+
+    stato["vit_griglia"] = griglia
+    stato["vit_eta"] = eta
+
+    # colore per cella in base all'eta': nasce negli alti, matura nei medi,
+    # invecchia nei bassi
+    t_norm = np.clip(eta / 40.0, 0.0, 1.0)
+    ca = np.array(colore_alti, dtype=np.float32)
+    cm = np.array(colore_medi, dtype=np.float32)
+    cb = np.array(colore_bassi, dtype=np.float32)
+    seg = t_norm * 2.0
+    f0 = np.clip(seg, 0.0, 1.0)[..., None]
+    f1 = np.clip(seg - 1.0, 0.0, 1.0)[..., None]
+    colore_celle = ca + (cm - ca) * f0 + (cb - cm) * f1
+
+    bg_arr = np.array(colore_bg, dtype=np.float32)
+    colore_piccolo = np.where(griglia[..., None], colore_celle, bg_arr)
+    finale = bg_arr + (colore_piccolo - bg_arr) * intensita
+
+    campo_grande = cv2.resize(finale.astype(np.float32), (w, h), interpolation=cv2.INTER_NEAREST)
+    canvas[:] = np.clip(campo_grande, 0, 255).astype(np.uint8)
+
+    return canvas
+
+
 MOTORI = {
     "Deriva (cartesiana)": {"funzione": disegna_ellisse, "n_step": 900, "fade": 0.90},
     "Fioritura (polare)": {"funzione": disegna_loto, "n_step": 3300, "fade": 0.80},
@@ -2055,6 +2168,7 @@ MOTORI = {
     "Mosaico (celle di Voronoi)": {"funzione": disegna_mosaico, "n_step": 20, "fade": 0.0},
     "Galleria (tunnel prospettico)": {"funzione": disegna_galleria, "n_step": 900, "fade": 0.0},
     "Braci (fuoco algoritmico)": {"funzione": disegna_braci, "n_step": 900, "fade": 0.0},
+    "Vita (automa cellulare 2D)": {"funzione": disegna_vita, "n_step": 900, "fade": 0.0},
 }
 
 
