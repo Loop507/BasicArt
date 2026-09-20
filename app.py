@@ -42,7 +42,7 @@ RISOLUZIONI = {
     "1:1   (720x720)": (720, 720),
 }
 
-FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)", "Plasma (interferenza)", "Cometa (starfield prospettico)", "Magma (metaballs)", "Mosaico (celle di Voronoi)", "Galleria (tunnel prospettico)", "Braci (fuoco algoritmico)", "Vita (automa cellulare 2D)", "Morfogenesi (reazione-diffusione)"]
+FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)", "Plasma (interferenza)", "Cometa (starfield prospettico)", "Magma (metaballs)", "Mosaico (celle di Voronoi)", "Galleria (tunnel prospettico)", "Braci (fuoco algoritmico)", "Vita (automa cellulare 2D)", "Morfogenesi (reazione-diffusione)", "Increspatura (onde d'impatto)"]
 
 # font veri (TTF) per "Iscrizione" — cartella "fonts/" accanto a questo script.
 # Se mancante, l'app ripiega automaticamente sui font Hershey di OpenCV
@@ -2258,6 +2258,95 @@ def disegna_morfogenesi(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, co
     return canvas
 
 
+def disegna_increspatura(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                          colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
+                          dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
+    """Increspatura: ogni attacco forte (fronte di salita dell'onset, non
+    solo un valore alto sostenuto) genera un nuovo anello che si espande dal
+    punto d'origine e sfuma, come un sasso lanciato nell'acqua. E' il primo
+    motore del catalogo dove ogni singolo colpo genera un evento visibile e
+    tracciabile: Labirinto/Poliedro/Statica cambiano tutto lo stato ad ogni
+    battuta, qui invece ogni colpo resta un cerchio indipendente che nasce,
+    cresce e si spegne per conto suo, e piu' colpi vicini nel tempo restano
+    visibili insieme come onde concentriche sovrapposte. Colore dell'anello
+    deciso dalla banda che ha dominato in quel preciso istante. Pool di
+    anelli a dimensione fissa (stato persistente) riusato a rotazione, per
+    evitare array che crescono senza limite."""
+    fattore, _k1, _k2, _k_loto, onset, intensita, velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    _ = fattore
+
+    h, w = canvas.shape[:2]
+    n_pool = int(np.clip(len(t1_arr) // 30, 10, 40))
+
+    if stato is None:
+        stato = {}
+    if "inc_eta" not in stato or len(stato["inc_eta"]) != n_pool:
+        stato["inc_eta"] = np.full(n_pool, -1.0, dtype=np.float32)   # -1 = slot libero
+        stato["inc_pos"] = np.zeros((n_pool, 2), dtype=np.float32)
+        stato["inc_gruppo"] = np.zeros(n_pool, dtype=np.int32)
+        stato["inc_cursore"] = 0
+        stato["inc_rng"] = np.random.default_rng(507)
+        stato["inc_onset_prev"] = 0.0
+
+    eta = stato["inc_eta"]
+    pos = stato["inc_pos"]
+    gruppo = stato["inc_gruppo"]
+    rng = stato["inc_rng"]
+    onset_prev = stato["inc_onset_prev"]
+
+    # fronte di salita: scatta solo quando l'onset SUPERA la soglia partendo
+    # da sotto, non ad ogni frame in cui resta alto -- un colpo, un anello
+    soglia = 0.5
+    scatta = (onset > soglia) and (onset_prev <= soglia)
+    stato["inc_onset_prev"] = float(onset)
+
+    attivi = eta >= 0
+    eta[attivi] += 1.0
+
+    if scatta:
+        slot = stato["inc_cursore"] % n_pool
+        stato["inc_cursore"] += 1
+        pos[slot] = rng.uniform(-0.8, 0.8, 2)
+        eta[slot] = 0.0
+        bande = np.array([feat["bassi"][i], feat["medi"][i], feat["alti"][i]])
+        gruppo[slot] = int(np.argmax(bande))
+
+    vita_max = max(int(fps * 1.5), 20)
+    attivi = eta >= 0
+    progresso = np.where(attivi, eta / vita_max, 0.0)
+    scaduti = attivi & (progresso >= 1.0)
+    eta[scaduti] = -1.0
+    attivi = eta >= 0
+
+    stato["inc_eta"] = eta
+    stato["inc_pos"] = pos
+    stato["inc_gruppo"] = gruppo
+
+    # velocita' di espansione legata al BPM: su brani rapidi gli anelli
+    # coprono piu' schermo prima di spegnersi
+    raggio_massimo = min(raggio_x, raggio_y) * 1.3 * np.clip(0.6 + 0.9 * velocita, 0.4, 2.0)
+    palette = (colore_bassi, colore_medi, colore_alti)
+
+    for k in range(n_pool):
+        if not attivi[k]:
+            continue
+        px = int(cx + pos[k, 0] * raggio_x)
+        py = int(cy + pos[k, 1] * raggio_y)
+        p = progresso[k]
+        raggio_k = int(raggio_massimo * p)
+        if raggio_k < 1:
+            raggio_k = 1
+        opacita = np.clip(1.0 - p, 0.0, 1.0) ** 1.3
+        colore_base = palette[gruppo[k]]
+        colore = tuple(min(int(c * intensita * opacita), 255) for c in colore_base)
+        spess_anello = max(1, int(spessore * (0.6 + 0.6 * (1.0 - p))))
+        cv2.circle(canvas, (px, py), raggio_k, colore, spess_anello, cv2.LINE_AA)
+
+    return canvas
+
+
 MOTORI = {
     "Deriva (cartesiana)": {"funzione": disegna_ellisse, "n_step": 900, "fade": 0.90},
     "Fioritura (polare)": {"funzione": disegna_loto, "n_step": 3300, "fade": 0.80},
@@ -2281,6 +2370,7 @@ MOTORI = {
     "Braci (fuoco algoritmico)": {"funzione": disegna_braci, "n_step": 900, "fade": 0.0},
     "Vita (automa cellulare 2D)": {"funzione": disegna_vita, "n_step": 900, "fade": 0.0},
     "Morfogenesi (reazione-diffusione)": {"funzione": disegna_morfogenesi, "n_step": 900, "fade": 0.0},
+    "Increspatura (onde d'impatto)": {"funzione": disegna_increspatura, "n_step": 400, "fade": 0.25},
 }
 
 
