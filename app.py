@@ -42,7 +42,7 @@ RISOLUZIONI = {
     "1:1   (720x720)": (720, 720),
 }
 
-FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)", "Plasma (interferenza)", "Cometa (starfield prospettico)", "Magma (metaballs)", "Mosaico (celle di Voronoi)", "Galleria (tunnel prospettico)", "Braci (fuoco algoritmico)", "Vita (automa cellulare 2D)", "Morfogenesi (reazione-diffusione)", "Increspatura (onde d'impatto)"]
+FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)", "Plasma (interferenza)", "Cometa (starfield prospettico)", "Magma (metaballs)", "Mosaico (celle di Voronoi)", "Galleria (tunnel prospettico)", "Braci (fuoco algoritmico)", "Vita (automa cellulare 2D)", "Morfogenesi (reazione-diffusione)", "Increspatura (onde d'impatto)", "Formica (automa di Langton)"]
 
 # font veri (TTF) per "Iscrizione" — cartella "fonts/" accanto a questo script.
 # Se mancante, l'app ripiega automaticamente sui font Hershey di OpenCV
@@ -2347,6 +2347,117 @@ def disegna_increspatura(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, c
     return canvas
 
 
+def disegna_formica(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                     colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
+                     dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
+    """Formica: l'automa di Langton (Christopher Langton, 1986) — non una
+    griglia che si aggiorna tutta insieme come Vita/Statica, ma una o piu'
+    formiche che si muovono su una griglia condivisa: su una cella "chiara"
+    la formica gira e la annerisce, su una cella "scura" gira dall'altra
+    parte e la schiarisce, poi avanza. Da regole ridicolmente semplici nasce
+    prima un caos apparente, poi — sempre, qualunque punto di partenza — le
+    formiche costruiscono una "autostrada" diagonale che si ripete
+    all'infinito: il momento in cui il caos si organizza e' lo spettacolo.
+    La regola di svolta alterna fra quella classica (2 stati) e una
+    generalizzazione nota a 4 stati "LLRR" (entrambe di dominio pubblico) in
+    base ai bassi. Numero di formiche attive segue l'energia (pool fisso,
+    attivazione graduale come in Cometa); velocita' di avanzamento segue il
+    BPM."""
+    fattore, _k1, _k2, _k_loto, _onset, intensita, velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    bassi = feat["bassi"][i] * reattivita
+    presenza = feat["presenza"][i]
+
+    h, w = canvas.shape[:2]
+    ris_w = max(70, int(np.sqrt(len(t1_arr)) * 5))
+    ris_h = max(50, int(ris_w * h / w))
+    n_pool = 8
+
+    if stato is None:
+        stato = {}
+    if "for_griglia" not in stato or stato["for_griglia"].shape != (ris_h, ris_w):
+        rng = np.random.default_rng(507)
+        stato["for_griglia"] = np.zeros((ris_h, ris_w), dtype=np.uint8)
+        stato["for_pos"] = np.stack([
+            rng.integers(ris_h // 3, ris_h - ris_h // 3, n_pool),
+            rng.integers(ris_w // 3, ris_w - ris_w // 3, n_pool),
+        ], axis=1)
+        stato["for_dir"] = rng.integers(0, 4, n_pool)
+        stato["for_ordine"] = rng.permutation(n_pool)
+        stato["for_progresso"] = 0.0
+
+    griglia = stato["for_griglia"]
+    pos = stato["for_pos"]
+    direz = stato["for_dir"]
+
+    # due regole di svolta note (non inventate): "RL" e' la formica
+    # originale di Langton (2 stati), "LLRR" e' una generalizzazione nota
+    # che produce un'autostrada diversa (4 stati, colorazione piu' graduata)
+    usa_variante = bassi > 0.55
+    if usa_variante:
+        regola = np.array([0, 0, 1, 1])   # LLRR: 0=sinistra, 1=destra
+    else:
+        regola = np.array([1, 0])          # RL classica
+    n_stati = len(regola)
+    griglia = np.clip(griglia, 0, n_stati - 1)
+
+    # quante formiche sono attive: segue l'energia + gate di presenza,
+    # stesso principio di attivazione graduale usato in Cometa
+    frazione_attiva = np.clip(0.25 + 0.75 * fattore, 0.1, 1.0) * max(presenza, 0.15)
+    n_attive = max(1, int(round(n_pool * frazione_attiva)))
+    attive = np.zeros(n_pool, dtype=bool)
+    attive[stato["for_ordine"][:n_attive]] = True
+    idx_attive = np.where(attive)[0]
+
+    # passi per frame: le formiche avanzano di una cella per passo, servono
+    # molti passi per vedere un movimento fluido nell'arco di un video;
+    # velocita' legata al BPM
+    passi_per_secondo = (25.0 + 90.0 * reattivita) * velocita
+    stato["for_progresso"] += passi_per_secondo / fps
+    passi = min(int(stato["for_progresso"]), 400)
+    stato["for_progresso"] -= passi
+
+    dx_dir = np.array([0, 1, 0, -1])
+    dy_dir = np.array([-1, 0, 1, 0])
+
+    for _ in range(passi):
+        if len(idx_attive) == 0:
+            break
+        y = pos[idx_attive, 0]
+        x = pos[idx_attive, 1]
+        valore = griglia[y, x]
+        girata = regola[valore]   # 0=sinistra, 1=destra
+        delta = np.where(girata == 0, -1, 1)
+        direz[idx_attive] = (direz[idx_attive] + delta) % 4
+        griglia[y, x] = (valore + 1) % n_stati
+        pos[idx_attive, 0] = (y + dy_dir[direz[idx_attive]]) % ris_h
+        pos[idx_attive, 1] = (x + dx_dir[direz[idx_attive]]) % ris_w
+
+    stato["for_griglia"] = griglia
+    stato["for_pos"] = pos
+    stato["for_dir"] = direz
+
+    colore_base = np.array(_colore_miscelato(feat, i, colore_bassi, colore_medi, colore_alti), dtype=np.float32)
+    bg_arr = np.array(colore_bg, dtype=np.float32)
+    t_stato = griglia.astype(np.float32) / max(n_stati - 1, 1)
+    colore_piccolo = bg_arr + (colore_base - bg_arr) * t_stato[..., None]
+    finale = bg_arr + (colore_piccolo - bg_arr) * intensita
+    campo_grande = cv2.resize(finale.astype(np.float32), (w, h), interpolation=cv2.INTER_NEAREST)
+    canvas[:] = np.clip(campo_grande, 0, 255).astype(np.uint8)
+
+    # le formiche stesse, come piccoli punti ben visibili sopra la scia
+    scala_x = w / ris_w
+    scala_y = h / ris_h
+    colore_formica = tuple(min(int(c * intensita), 255) for c in colore_alti)
+    for k in idx_attive:
+        py = int(pos[k, 0] * scala_y + scala_y / 2)
+        px = int(pos[k, 1] * scala_x + scala_x / 2)
+        cv2.circle(canvas, (px, py), max(1, int(spessore)), colore_formica, -1, cv2.LINE_AA)
+
+    return canvas
+
+
 MOTORI = {
     "Deriva (cartesiana)": {"funzione": disegna_ellisse, "n_step": 900, "fade": 0.90},
     "Fioritura (polare)": {"funzione": disegna_loto, "n_step": 3300, "fade": 0.80},
@@ -2371,6 +2482,7 @@ MOTORI = {
     "Vita (automa cellulare 2D)": {"funzione": disegna_vita, "n_step": 900, "fade": 0.0},
     "Morfogenesi (reazione-diffusione)": {"funzione": disegna_morfogenesi, "n_step": 900, "fade": 0.0},
     "Increspatura (onde d'impatto)": {"funzione": disegna_increspatura, "n_step": 400, "fade": 0.25},
+    "Formica (automa di Langton)": {"funzione": disegna_formica, "n_step": 900, "fade": 0.0},
 }
 
 
