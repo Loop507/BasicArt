@@ -42,7 +42,7 @@ RISOLUZIONI = {
     "1:1   (720x720)": (720, 720),
 }
 
-FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)", "Plasma (interferenza)", "Cometa (starfield prospettico)", "Magma (metaballs)", "Mosaico (celle di Voronoi)", "Galleria (tunnel prospettico)", "Braci (fuoco algoritmico)", "Vita (automa cellulare 2D)", "Morfogenesi (reazione-diffusione)", "Increspatura (onde d'impatto)", "Formica (automa di Langton)", "Pentola (sandpile)", "Circuito (Wireworld)"]
+FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)", "Plasma (interferenza)", "Cometa (starfield prospettico)", "Magma (metaballs)", "Mosaico (celle di Voronoi)", "Galleria (tunnel prospettico)", "Braci (fuoco algoritmico)", "Vita (automa cellulare 2D)", "Morfogenesi (reazione-diffusione)", "Increspatura (onde d'impatto)", "Formica (automa di Langton)", "Pentola (sandpile)", "Circuito (Wireworld)", "Sorte (chaos game)"]
 
 # font veri (TTF) per "Iscrizione" — cartella "fonts/" accanto a questo script.
 # Se mancante, l'app ripiega automaticamente sui font Hershey di OpenCV
@@ -2670,6 +2670,96 @@ def disegna_circuito(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, color
     return canvas
 
 
+def disegna_sorte(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                   colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
+                   dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
+    """Sorte: il chaos game (Michael Barnsley, 1988) — un solo punto che
+    vaga: ad ogni passo salta a meta' strada verso uno dei vertici di un
+    poligono, scelto a caso. Da migliaia di salti puramente casuali emerge,
+    sempre, un frattale preciso (tipicamente una variante del triangolo di
+    Sierpinski) — e' il gemello statistico di Graffio (stesso "punto che
+    vaga"), ma qui il caos converge sempre alla stessa forma invece di
+    vagare senza meta. Il numero di vertici e' fissato all'inizio del
+    render (da bassi+alti del primo istante); i vertici sono divisi in tre
+    gruppi bassi/medi/alti e la PROBABILITA' di saltare verso ciascun
+    gruppo segue la reale dominanza di banda istante per istante (le
+    "quote" usate anche per il mix colore), cosi' il frattale "pende"
+    visibilmente verso il lato della banda che domina in quel momento.
+    Densita' di visita accumulata con lieve decadimento (stato persistente),
+    non ridisegnata da zero ogni frame."""
+    fattore, _k1, _k2, _k_loto, _onset, intensita, velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    _ = fattore
+    presenza = feat["presenza"][i]
+
+    h, w = canvas.shape[:2]
+    ris_w = max(80, int(np.sqrt(len(t1_arr)) * 5))
+    ris_h = max(45, int(ris_w * h / w))
+
+    if stato is None:
+        stato = {}
+    if "sor_densita" not in stato or stato["sor_densita"].shape != (ris_h, ris_w):
+        rng = np.random.default_rng(507)
+        bassi0 = float(feat["bassi"][0])
+        alti0 = float(feat["alti"][0])
+        n_vertici = int(np.clip(3 + round(3 * (bassi0 + alti0) / 2.0), 3, 6))
+        angoli = np.linspace(0, 2 * np.pi, n_vertici, endpoint=False) + np.pi / 2
+        raggio_poligono = min(raggio_x, raggio_y) * 0.92
+        vert_x = cx + raggio_poligono * np.cos(angoli)
+        vert_y = cy + raggio_poligono * np.sin(angoli)
+        stato["sor_vertici"] = np.stack([vert_x, vert_y], axis=1)
+        stato["sor_gruppo"] = np.arange(n_vertici) % 3
+        stato["sor_punto"] = np.array([float(cx), float(cy)])
+        stato["sor_densita"] = np.zeros((ris_h, ris_w), dtype=np.float32)
+        stato["sor_rng"] = rng
+
+    vertici = stato["sor_vertici"]
+    gruppo_v = stato["sor_gruppo"]
+    punto = stato["sor_punto"]
+    densita = stato["sor_densita"]
+    rng = stato["sor_rng"]
+    n_vertici = len(vertici)
+
+    # probabilita' di saltare verso ciascun gruppo = reale dominanza di
+    # banda in questo istante (le stesse "quote" di _colore_miscelato)
+    quota = np.array([feat["quota_bassi"][i], feat["quota_medi"][i], feat["quota_alti"][i]])
+    conteggio_gruppo = np.array([np.sum(gruppo_v == g) for g in range(3)])
+    pesi = quota[gruppo_v] / conteggio_gruppo[gruppo_v]
+    pesi = pesi / pesi.sum()
+
+    passi = int(np.clip(80 + 300 * velocita * reattivita, 40, 600) * max(presenza, 0.1))
+    scelte = rng.choice(n_vertici, size=passi, p=pesi)
+
+    scala_x = ris_w / w
+    scala_y = ris_h / h
+    vert_x_arr = vertici[:, 0]
+    vert_y_arr = vertici[:, 1]
+    px, py = float(punto[0]), float(punto[1])
+
+    densita *= 0.992
+    for idx in scelte:
+        px += 0.5 * (vert_x_arr[idx] - px)
+        py += 0.5 * (vert_y_arr[idx] - py)
+        gx = int(px * scala_x)
+        gy = int(py * scala_y)
+        if 0 <= gy < ris_h and 0 <= gx < ris_w:
+            densita[gy, gx] += 1.0
+
+    stato["sor_punto"] = np.array([px, py])
+    stato["sor_densita"] = densita
+
+    colore_base = np.array(_colore_miscelato(feat, i, colore_bassi, colore_medi, colore_alti), dtype=np.float32)
+    bg_arr = np.array(colore_bg, dtype=np.float32)
+    t_norm = np.clip(np.sqrt(densita) / 4.0, 0.0, 1.0)   # sqrt: le zone piu' visitate non saturano troppo in fretta
+    colore_piccolo = bg_arr + (colore_base - bg_arr) * t_norm[..., None]
+    finale = bg_arr + (colore_piccolo - bg_arr) * intensita
+    campo_grande = cv2.resize(finale.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)
+    canvas[:] = np.clip(campo_grande, 0, 255).astype(np.uint8)
+
+    return canvas
+
+
 MOTORI = {
     "Deriva (cartesiana)": {"funzione": disegna_ellisse, "n_step": 900, "fade": 0.90},
     "Fioritura (polare)": {"funzione": disegna_loto, "n_step": 3300, "fade": 0.80},
@@ -2697,6 +2787,7 @@ MOTORI = {
     "Formica (automa di Langton)": {"funzione": disegna_formica, "n_step": 900, "fade": 0.0},
     "Pentola (sandpile)": {"funzione": disegna_pentola, "n_step": 900, "fade": 0.0},
     "Circuito (Wireworld)": {"funzione": disegna_circuito, "n_step": 900, "fade": 0.0},
+    "Sorte (chaos game)": {"funzione": disegna_sorte, "n_step": 900, "fade": 0.0},
 }
 
 
