@@ -42,7 +42,7 @@ RISOLUZIONI = {
     "1:1   (720x720)": (720, 720),
 }
 
-FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)", "Plasma (interferenza)", "Cometa (starfield prospettico)", "Magma (metaballs)", "Mosaico (celle di Voronoi)", "Galleria (tunnel prospettico)", "Braci (fuoco algoritmico)", "Vita (automa cellulare 2D)"]
+FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)", "Plasma (interferenza)", "Cometa (starfield prospettico)", "Magma (metaballs)", "Mosaico (celle di Voronoi)", "Galleria (tunnel prospettico)", "Braci (fuoco algoritmico)", "Vita (automa cellulare 2D)", "Morfogenesi (reazione-diffusione)"]
 
 # font veri (TTF) per "Iscrizione" — cartella "fonts/" accanto a questo script.
 # Se mancante, l'app ripiega automaticamente sui font Hershey di OpenCV
@@ -2147,6 +2147,117 @@ def disegna_vita(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_ba
     return canvas
 
 
+def disegna_morfogenesi(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                         colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
+                         dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
+    """Morfogenesi: sistema di reazione-diffusione di Gray-Scott — due
+    sostanze chimiche virtuali (U attivatore, V inibitore) che diffondono e
+    reagiscono, generando macchie/strisce organiche stile pelle animale
+    (Alan Turing lo teorizzo' nel 1952 per spiegare le "macchie del
+    leopardo"). Texture completamente diversa da tutto il resto del
+    catalogo: non punti/linee/celle nette come Vita/Mosaico, ma forme
+    fluide che emergono da rumore casuale. Il feed rate (F) e il kill rate
+    (k) — i due parametri che decidono se il pattern tende a macchie
+    tonde, vermi o strisce, secondo la classificazione di Pearson (1993) —
+    seguono bassi e medi; la diffusione (quanto il pattern e' "nervoso")
+    segue gli alti; il numero di passi di simulazione per frame segue il
+    BPM e viene azzerato dal gate di presenza (nel silenzio il pattern si
+    "congela" invece di continuare a evolvere); ogni attacco forte inietta
+    una piccola perturbazione in un punto casuale, come un nuovo innesco di
+    crescita. Stato persistente obbligatorio: la reazione deve accumularsi
+    passo dopo passo, non puo' essere ricalcolata da zero ad ogni frame."""
+    fattore, _k1, _k2, _k_loto, onset, intensita, velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    bassi = feat["bassi"][i] * reattivita
+    medi = feat["medi"][i] * reattivita
+    alti = feat["alti"][i] * reattivita
+    presenza = feat["presenza"][i]
+    _ = fattore
+
+    h, w = canvas.shape[:2]
+    ris_w = max(70, int(np.sqrt(len(t1_arr)) * 5))
+    ris_h = max(50, int(ris_w * h / w))
+
+    if stato is None:
+        stato = {}
+    if "mor_u" not in stato or stato["mor_u"].shape != (ris_h, ris_w):
+        rng = np.random.default_rng(507)
+        u = np.ones((ris_h, ris_w), dtype=np.float32)
+        v = np.zeros((ris_h, ris_w), dtype=np.float32)
+        for _ in range(8):
+            cy0 = int(rng.integers(ris_h // 6, max(ris_h // 6 + 1, ris_h - ris_h // 6)))
+            cx0 = int(rng.integers(ris_w // 6, max(ris_w // 6 + 1, ris_w - ris_w // 6)))
+            r0 = int(rng.integers(2, 5))
+            y0, y1 = max(0, cy0 - r0), min(ris_h, cy0 + r0)
+            x0, x1 = max(0, cx0 - r0), min(ris_w, cx0 + r0)
+            u[y0:y1, x0:x1] = 0.50
+            v[y0:y1, x0:x1] = 0.25
+        stato["mor_u"] = u
+        stato["mor_v"] = v
+        stato["mor_rng"] = rng
+
+    u = stato["mor_u"]
+    v = stato["mor_v"]
+    rng = stato["mor_rng"]
+
+    feed = float(np.clip(0.020 + 0.035 * bassi, 0.010, 0.065))
+    kill = float(np.clip(feed + 0.030 + 0.025 * (1.0 - medi), 0.035, 0.075))
+    dv = float(np.clip(0.08 + 0.035 * alti, 0.05, 0.13))
+    du = dv * 2.0
+
+    n_passi = max(0, int(round((2 + 7 * velocita) * presenza)))
+
+    def _laplaciano(a):
+        return (
+            -a
+            + 0.20 * (np.roll(a, 1, 0) + np.roll(a, -1, 0) + np.roll(a, 1, 1) + np.roll(a, -1, 1))
+            + 0.05 * (np.roll(np.roll(a, 1, 0), 1, 1) + np.roll(np.roll(a, 1, 0), -1, 1)
+                      + np.roll(np.roll(a, -1, 0), 1, 1) + np.roll(np.roll(a, -1, 0), -1, 1))
+        )
+
+    for _ in range(n_passi):
+        lap_u = _laplaciano(u)
+        lap_v = _laplaciano(v)
+        reazione = u * v * v
+        u = u + (du * lap_u - reazione + feed * (1.0 - u))
+        v = v + (dv * lap_v + reazione - (feed + kill) * v)
+        u = np.clip(u, 0.0, 1.0)
+        v = np.clip(v, 0.0, 1.0)
+
+    # sugli attacchi forti, una piccola perturbazione casuale di V --
+    # ogni colpo puo' "innescare" nuova crescita in un punto casuale
+    if onset > 0.55:
+        py = int(rng.integers(0, ris_h))
+        px = int(rng.integers(0, ris_w))
+        r0 = 3
+        y0, y1 = max(0, py - r0), min(ris_h, py + r0)
+        x0, x1 = max(0, px - r0), min(ris_w, px + r0)
+        v[y0:y1, x0:x1] = np.clip(v[y0:y1, x0:x1] + 0.3, 0.0, 1.0)
+
+    stato["mor_u"] = u
+    stato["mor_v"] = v
+
+    # colore: gradiente a 3 tappe attraverso i colori di banda in base alla
+    # concentrazione dell'inibitore V (dove V e' alto, il pattern e' "vivo")
+    t_norm = np.clip(v / 0.35, 0.0, 1.0)
+    bg_arr = np.array(colore_bg, dtype=np.float32)
+    cb = np.array(colore_bassi, dtype=np.float32)
+    cm = np.array(colore_medi, dtype=np.float32)
+    ca = np.array(colore_alti, dtype=np.float32)
+    seg = t_norm * 3.0
+    f0 = np.clip(seg, 0.0, 1.0)[..., None]
+    f1 = np.clip(seg - 1.0, 0.0, 1.0)[..., None]
+    f2 = np.clip(seg - 2.0, 0.0, 1.0)[..., None]
+    colore_arr = bg_arr + (cb - bg_arr) * f0 + (cm - cb) * f1 + (ca - cm) * f2
+
+    finale = bg_arr + (colore_arr - bg_arr) * intensita
+    campo_grande = cv2.resize(finale.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)
+    canvas[:] = np.clip(campo_grande, 0, 255).astype(np.uint8)
+
+    return canvas
+
+
 MOTORI = {
     "Deriva (cartesiana)": {"funzione": disegna_ellisse, "n_step": 900, "fade": 0.90},
     "Fioritura (polare)": {"funzione": disegna_loto, "n_step": 3300, "fade": 0.80},
@@ -2169,6 +2280,7 @@ MOTORI = {
     "Galleria (tunnel prospettico)": {"funzione": disegna_galleria, "n_step": 900, "fade": 0.0},
     "Braci (fuoco algoritmico)": {"funzione": disegna_braci, "n_step": 900, "fade": 0.0},
     "Vita (automa cellulare 2D)": {"funzione": disegna_vita, "n_step": 900, "fade": 0.0},
+    "Morfogenesi (reazione-diffusione)": {"funzione": disegna_morfogenesi, "n_step": 900, "fade": 0.0},
 }
 
 
