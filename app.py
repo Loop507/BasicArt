@@ -42,7 +42,7 @@ RISOLUZIONI = {
     "1:1   (720x720)": (720, 720),
 }
 
-FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)", "Plasma (interferenza)", "Cometa (starfield prospettico)", "Magma (metaballs)", "Mosaico (celle di Voronoi)", "Galleria (tunnel prospettico)", "Braci (fuoco algoritmico)", "Vita (automa cellulare 2D)", "Morfogenesi (reazione-diffusione)", "Increspatura (onde d'impatto)", "Formica (automa di Langton)", "Pentola (sandpile)"]
+FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)", "Plasma (interferenza)", "Cometa (starfield prospettico)", "Magma (metaballs)", "Mosaico (celle di Voronoi)", "Galleria (tunnel prospettico)", "Braci (fuoco algoritmico)", "Vita (automa cellulare 2D)", "Morfogenesi (reazione-diffusione)", "Increspatura (onde d'impatto)", "Formica (automa di Langton)", "Pentola (sandpile)", "Circuito (Wireworld)"]
 
 # font veri (TTF) per "Iscrizione" — cartella "fonts/" accanto a questo script.
 # Se mancante, l'app ripiega automaticamente sui font Hershey di OpenCV
@@ -2556,6 +2556,120 @@ def disegna_pentola(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore
     return canvas
 
 
+def disegna_circuito(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                      colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
+                      dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
+    """Circuito: Wireworld (Brian Silverman, 1987, reso famoso da A.K.
+    Dewdney su Scientific American) — un automa che simula elettroni che
+    scorrono lungo fili. Ogni cella e' vuota, filo, testa-elettrone o
+    coda-elettrone: la testa diventa coda, la coda diventa filo, il filo
+    diventa testa solo se ha esattamente 1 o 2 vicini testa — cosi' un
+    segnale si propaga lungo il filo come una vera scarica, senza
+    attraversare gli incroci a caso. La rete di fili (un reticolo di tracce
+    orizzontali/verticali che ai loro incroci formano anelli chiusi, come
+    una scheda circuitale) e' generata UNA SOLA volta all'inizio e resta
+    fissa per tutto il video — solo gli elettroni sopra si muovono,
+    esattamente come nel Wireworld vero. Ogni attacco forte inietta un nuovo
+    elettrone in un punto casuale della rete; un flusso ambientale piu'
+    lieve lo fa anche di continuo, legato ai bassi. Filo=colore bassi
+    attenuato (traccia sempre visibile), coda=medi, testa=alti (la scintilla
+    che guida). Velocita' di simulazione (passi/secondo) segue il BPM."""
+    fattore, _k1, _k2, _k_loto, onset, intensita, velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    _ = fattore
+    bassi = feat["bassi"][i] * reattivita
+    presenza = feat["presenza"][i]
+
+    h, w = canvas.shape[:2]
+    ris_w = max(70, int(np.sqrt(len(t1_arr)) * 5))
+    ris_h = max(40, int(ris_w * h / w))
+
+    if stato is None:
+        stato = {}
+    if "cir_grid" not in stato or stato["cir_grid"].shape != (ris_h, ris_w):
+        rng = np.random.default_rng(507)
+        grid = np.zeros((ris_h, ris_w), dtype=np.uint8)
+        n_oriz = max(3, ris_h // 8)
+        n_vert = max(3, ris_w // 8)
+        righe = rng.choice(np.arange(2, ris_h - 2), size=min(n_oriz, ris_h - 4), replace=False)
+        colonne = rng.choice(np.arange(2, ris_w - 2), size=min(n_vert, ris_w - 4), replace=False)
+        for r in righe:
+            grid[r, :] = 1
+        for c in colonne:
+            grid[:, c] = 1
+        stato["cir_grid"] = grid
+        stato["cir_wire_y"], stato["cir_wire_x"] = np.where(grid == 1)
+        stato["cir_rng"] = rng
+        stato["cir_onset_prev"] = 0.0
+        stato["cir_progresso"] = 0.0
+
+    grid = stato["cir_grid"]
+    rng = stato["cir_rng"]
+    wire_y, wire_x = stato["cir_wire_y"], stato["cir_wire_x"]
+
+    # iniezione ambientale continua, legata ai bassi + gate di presenza
+    if presenza > 0.15 and len(wire_y) > 0:
+        p_iniezione = 0.02 + 0.05 * np.clip(bassi, 0.0, 1.4)
+        if rng.uniform() < p_iniezione:
+            idx = rng.integers(0, len(wire_y))
+            if grid[wire_y[idx], wire_x[idx]] == 1:
+                grid[wire_y[idx], wire_x[idx]] = 2
+
+    # fronte di salita dell'onset: un nuovo elettrone, come in
+    # Increspatura/Pentola
+    onset_prev = stato["cir_onset_prev"]
+    scatta = (onset > 0.5) and (onset_prev <= 0.5)
+    stato["cir_onset_prev"] = float(onset)
+    if scatta and len(wire_y) > 0:
+        idx = rng.integers(0, len(wire_y))
+        grid[wire_y[idx], wire_x[idx]] = 2
+
+    # passi di simulazione per frame, legati al BPM
+    passi_al_secondo = 8.0 + 30.0 * velocita * reattivita
+    stato["cir_progresso"] += passi_al_secondo / fps
+    passi = min(int(stato["cir_progresso"]), 60)
+    stato["cir_progresso"] -= passi
+
+    for _ in range(passi):
+        is_wire = grid == 1
+        is_head = grid == 2
+        is_tail = grid == 3
+        nuova = np.zeros(grid.shape, dtype=np.uint8)
+        nuova[is_tail] = 1
+        nuova[is_head] = 3
+        conta_teste = np.zeros(grid.shape, dtype=np.int16)
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dy == 0 and dx == 0:
+                    continue
+                conta_teste += np.roll(np.roll(is_head, dy, axis=0), dx, axis=1)
+        diventa_testa = is_wire & ((conta_teste == 1) | (conta_teste == 2))
+        nuova[diventa_testa] = 2
+        nuova[is_wire & ~diventa_testa] = 1
+        grid = nuova
+
+    stato["cir_grid"] = grid
+
+    bg_arr = np.array(colore_bg, dtype=np.float32)
+    cb = np.array(colore_bassi, dtype=np.float32)
+    cm = np.array(colore_medi, dtype=np.float32)
+    ca = np.array(colore_alti, dtype=np.float32)
+    colore_filo = bg_arr + (cb - bg_arr) * 0.30
+
+    colore_piccolo = np.empty((ris_h, ris_w, 3), dtype=np.float32)
+    colore_piccolo[:] = bg_arr
+    colore_piccolo[grid == 1] = colore_filo
+    colore_piccolo[grid == 3] = cm
+    colore_piccolo[grid == 2] = ca
+
+    finale = bg_arr + (colore_piccolo - bg_arr) * intensita
+    campo_grande = cv2.resize(finale.astype(np.float32), (w, h), interpolation=cv2.INTER_NEAREST)
+    canvas[:] = np.clip(campo_grande, 0, 255).astype(np.uint8)
+
+    return canvas
+
+
 MOTORI = {
     "Deriva (cartesiana)": {"funzione": disegna_ellisse, "n_step": 900, "fade": 0.90},
     "Fioritura (polare)": {"funzione": disegna_loto, "n_step": 3300, "fade": 0.80},
@@ -2582,6 +2696,7 @@ MOTORI = {
     "Increspatura (onde d'impatto)": {"funzione": disegna_increspatura, "n_step": 400, "fade": 0.25},
     "Formica (automa di Langton)": {"funzione": disegna_formica, "n_step": 900, "fade": 0.0},
     "Pentola (sandpile)": {"funzione": disegna_pentola, "n_step": 900, "fade": 0.0},
+    "Circuito (Wireworld)": {"funzione": disegna_circuito, "n_step": 900, "fade": 0.0},
 }
 
 
