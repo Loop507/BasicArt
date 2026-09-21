@@ -42,7 +42,7 @@ RISOLUZIONI = {
     "1:1   (720x720)": (720, 720),
 }
 
-FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)", "Plasma (interferenza)", "Cometa (starfield prospettico)", "Magma (metaballs)", "Mosaico (celle di Voronoi)", "Galleria (tunnel prospettico)", "Braci (fuoco algoritmico)", "Vita (automa cellulare 2D)", "Morfogenesi (reazione-diffusione)", "Increspatura (onde d'impatto)", "Formica (automa di Langton)", "Pentola (sandpile)", "Circuito (Wireworld)", "Sorte (chaos game)"]
+FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)", "Plasma (interferenza)", "Cometa (starfield prospettico)", "Magma (metaballs)", "Mosaico (celle di Voronoi)", "Galleria (tunnel prospettico)", "Braci (fuoco algoritmico)", "Vita (automa cellulare 2D)", "Morfogenesi (reazione-diffusione)", "Increspatura (onde d'impatto)", "Formica (automa di Langton)", "Pentola (sandpile)", "Circuito (Wireworld)", "Sorte (chaos game)", "Caos (biforcazione)"]
 
 # font veri (TTF) per "Iscrizione" — cartella "fonts/" accanto a questo script.
 # Se mancante, l'app ripiega automaticamente sui font Hershey di OpenCV
@@ -2760,6 +2760,95 @@ def disegna_sorte(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_b
     return canvas
 
 
+def disegna_caos(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                  colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
+                  dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
+    """Caos: il diagramma di biforcazione della mappa logistica
+    (x_(n+1)=r*x_n*(1-x_n), teoria del caos, Mitchell Feigenbaum anni '70)
+    — il disegno piu' famoso della teoria del caos: per r piccolo il
+    sistema si stabilizza su un valore, poi si biforca in due, poi
+    quattro, poi diventa caos puro. Ogni colonna del canvas e' un valore
+    di r fisso (asse orizzontale), ogni riga un valore di stato (asse
+    verticale); migliaia di iterazioni si accumulano colonna per colonna
+    nel tempo (stato persistente, senza decadimento) rivelando
+    gradualmente l'albero frattale. Il parametro r del "cursore" — una
+    riga verticale luminosa sovrapposta, non accumulata — segue live
+    l'energia del brano: passaggi calmi = cursore sui valori stabili
+    (sinistra), passaggi intensi = cursore nella zona caotica (destra),
+    dove sfarfalla. Meccanismo radicalmente diverso da tutto il resto del
+    catalogo: sistemi dinamici, non geometria/automi/campi."""
+    fattore, _k1, _k2, _k_loto, _onset, intensita, velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    _ = fattore
+    presenza = feat["presenza"][i]
+
+    h, w = canvas.shape[:2]
+    ris_w = max(90, int(np.sqrt(len(t1_arr)) * 6))
+    ris_h = max(50, int(ris_w * h / w))
+    r_min, r_max = 2.4, 4.0
+
+    if stato is None:
+        stato = {}
+    if "cha_densita" not in stato or stato["cha_densita"].shape != (ris_h, ris_w):
+        rng = np.random.default_rng(507)
+        r_arr = np.linspace(r_min, r_max, ris_w)
+        x_arr = rng.uniform(0.05, 0.95, ris_w)
+        # transitorio iniziale: scarta le prime iterazioni prima di
+        # cominciare a disegnare, come nel diagramma classico (altrimenti
+        # le prime righe mostrerebbero solo il punto di partenza casuale,
+        # non il comportamento a lungo termine)
+        for _ in range(200):
+            x_arr = r_arr * x_arr * (1.0 - x_arr)
+        stato["cha_r"] = r_arr
+        stato["cha_x"] = x_arr
+        stato["cha_densita"] = np.zeros((ris_h, ris_w), dtype=np.float32)
+
+    r_arr = stato["cha_r"]
+    x_arr = stato["cha_x"]
+    densita = stato["cha_densita"]
+    colonne = np.arange(ris_w)
+
+    # energia complessiva pilota il "cursore": passaggi calmi verso la
+    # zona stabile (sinistra), passaggi intensi verso il caos (destra)
+    energia = np.clip(feat["rms"][i] * 0.6 + feat["bassi"][i] * 0.4, 0.0, 1.0) * reattivita
+    energia = float(np.clip(energia, 0.0, 1.0))
+    r_cursore = r_min + (r_max - r_min) * energia
+    col_cursore = int((r_cursore - r_min) / (r_max - r_min) * (ris_w - 1))
+
+    passi = max(4, int(round((10 + 90 * velocita) * max(presenza, 0.1))))
+    # nella colonna del cursore si accumula qualche punto in piu': la zona
+    # su cui la musica si sta "posando" in questo istante si illumina un
+    # po' piu' in fretta delle altre, oltre a mostrare la riga sovrapposta
+    peso_extra = np.ones(ris_w, dtype=np.float32)
+    largo = max(1, ris_w // 40)
+    peso_extra[max(0, col_cursore - largo):col_cursore + largo] = 2.5
+
+    for _ in range(passi):
+        x_arr = r_arr * x_arr * (1.0 - x_arr)
+        righe = np.clip((x_arr * ris_h).astype(np.int32), 0, ris_h - 1)
+        densita[righe, colonne] += peso_extra
+
+    stato["cha_x"] = x_arr
+    stato["cha_densita"] = densita
+
+    colore_base = np.array(_colore_miscelato(feat, i, colore_bassi, colore_medi, colore_alti), dtype=np.float32)
+    bg_arr = np.array(colore_bg, dtype=np.float32)
+    t_norm = np.clip(np.log1p(densita) / np.log1p(200.0), 0.0, 1.0)
+    colore_piccolo = bg_arr + (colore_base - bg_arr) * t_norm[..., None]
+
+    # cursore: riga verticale luminosa nel colore degli alti, sovrapposta
+    # (non accumulata in densita', quindi sparisce quando il cursore si
+    # sposta altrove)
+    colore_piccolo[:, max(0, col_cursore - 1):col_cursore + 2] = np.array(colore_alti, dtype=np.float32)
+
+    finale = bg_arr + (colore_piccolo - bg_arr) * intensita
+    campo_grande = cv2.resize(finale.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)
+    canvas[:] = np.clip(campo_grande, 0, 255).astype(np.uint8)
+
+    return canvas
+
+
 MOTORI = {
     "Deriva (cartesiana)": {"funzione": disegna_ellisse, "n_step": 900, "fade": 0.90},
     "Fioritura (polare)": {"funzione": disegna_loto, "n_step": 3300, "fade": 0.80},
@@ -2788,6 +2877,7 @@ MOTORI = {
     "Pentola (sandpile)": {"funzione": disegna_pentola, "n_step": 900, "fade": 0.0},
     "Circuito (Wireworld)": {"funzione": disegna_circuito, "n_step": 900, "fade": 0.0},
     "Sorte (chaos game)": {"funzione": disegna_sorte, "n_step": 900, "fade": 0.0},
+    "Caos (biforcazione)": {"funzione": disegna_caos, "n_step": 900, "fade": 0.0},
 }
 
 
