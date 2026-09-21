@@ -42,7 +42,7 @@ RISOLUZIONI = {
     "1:1   (720x720)": (720, 720),
 }
 
-FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)", "Plasma (interferenza)", "Cometa (starfield prospettico)", "Magma (metaballs)", "Mosaico (celle di Voronoi)", "Galleria (tunnel prospettico)", "Braci (fuoco algoritmico)", "Vita (automa cellulare 2D)", "Morfogenesi (reazione-diffusione)", "Increspatura (onde d'impatto)", "Formica (automa di Langton)", "Pentola (sandpile)", "Circuito (Wireworld)", "Sorte (chaos game)", "Caos (biforcazione)"]
+FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)", "Plasma (interferenza)", "Cometa (starfield prospettico)", "Magma (metaballs)", "Mosaico (celle di Voronoi)", "Galleria (tunnel prospettico)", "Braci (fuoco algoritmico)", "Vita (automa cellulare 2D)", "Morfogenesi (reazione-diffusione)", "Increspatura (onde d'impatto)", "Formica (automa di Langton)", "Pentola (sandpile)", "Circuito (Wireworld)", "Sorte (chaos game)", "Caos (biforcazione)", "Radici (frattale di Newton)", "Flusso (flow field)", "Muffa (Physarum)"]
 
 # font veri (TTF) per "Iscrizione" — cartella "fonts/" accanto a questo script.
 # Se mancante, l'app ripiega automaticamente sui font Hershey di OpenCV
@@ -2858,6 +2858,299 @@ def disegna_caos(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_ba
     return canvas
 
 
+def disegna_radici(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                    colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
+                    dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
+    """Radici: il frattale di Newton (Isaac Newton 1669 / Joseph Raphson
+    1690, esteso al piano complesso) — si applica il metodo di Newton per
+    trovare le radici di z^3-1=0 partendo da ogni punto del piano; il
+    punto si colora in base a QUALE delle tre radici raggiunge. Il confine
+    tra i tre "bacini di attrazione" e' frattale e intricatissimo (proprieta'
+    di Wada: ogni punto sul confine di un bacino e' anche sul confine degli
+    altri due — un fatto sorprendente della dinamica complessa). Diverso da
+    Frontiera/Julia: li' e' un solo insieme (scappa/non scappa), qui sono
+    tre attrattori in competizione — un abbinamento naturale con i tre
+    colori bassi/medi/alti, uno per radice. Zoom legato all'energia (piu'
+    energia, piu' dettaglio frattale visibile), lenta rotazione della
+    vista legata al BPM. Ricalcolato da zero ogni frame (come Frontiera/
+    Plasma), a risoluzione ridotta e ingrandito."""
+    fattore, _k1, _k2, _k_loto, _onset, intensita, velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+
+    h, w = canvas.shape[:2]
+    ris_w = max(90, int(np.sqrt(len(t1_arr)) * 6))
+    ris_h = max(50, int(ris_w * h / w))
+
+    radici = np.array([1.0 + 0j,
+                        complex(np.cos(2 * np.pi / 3), np.sin(2 * np.pi / 3)),
+                        complex(np.cos(4 * np.pi / 3), np.sin(4 * np.pi / 3))])
+
+    raggio_vista = np.clip(1.6 - 0.9 * np.clip(fattore, 0.0, 1.2), 0.5, 1.6)
+    angolo_vista = t_frame * 0.01 * velocita
+
+    xs = np.linspace(-raggio_vista, raggio_vista, ris_w)
+    ys = np.linspace(-raggio_vista * ris_h / ris_w, raggio_vista * ris_h / ris_w, ris_h)
+    grid_x, grid_y = np.meshgrid(xs, ys)
+    cos_a, sin_a = np.cos(angolo_vista), np.sin(angolo_vista)
+    grid_x_r = grid_x * cos_a - grid_y * sin_a
+    grid_y_r = grid_x * sin_a + grid_y * cos_a
+    z = grid_x_r + 1j * grid_y_r
+
+    n_iter = 26
+    with np.errstate(divide="ignore", invalid="ignore"):
+        for _ in range(n_iter):
+            denom = 3 * z * z
+            denom = np.where(np.abs(denom) < 1e-6, 1e-6, denom)
+            z = z - (z ** 3 - 1) / denom
+            z = np.nan_to_num(z, nan=0.0, posinf=1e6, neginf=-1e6)
+
+    dist = np.stack([np.abs(z - r) for r in radici], axis=0)
+    vincitore = np.argmin(dist, axis=0)
+    dist_vincitore = np.min(dist, axis=0)
+    vicinanza = np.clip(1.0 - dist_vincitore / 0.35, 0.0, 1.0)
+
+    palette = np.array([colore_bassi, colore_medi, colore_alti], dtype=np.float32)
+    colore_pixel = palette[vincitore]
+    bg_arr = np.array(colore_bg, dtype=np.float32)
+    colore_piccolo = bg_arr + (colore_pixel - bg_arr) * vicinanza[..., None]
+    finale = bg_arr + (colore_piccolo - bg_arr) * intensita
+    campo_grande = cv2.resize(finale.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)
+    canvas[:] = np.clip(campo_grande, 0, 255).astype(np.uint8)
+
+    return canvas
+
+
+def disegna_flusso(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                    colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
+                    dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
+    """Flusso: centinaia di particelle che si muovono seguendo un campo
+    vettoriale continuo (flow field / curl noise, tecnica diffusa nella
+    generative art contemporanea, formalizzata da Bridson et al. 2007 per
+    la fluidodinamica) — non il caso puro di Graffio, non la rete di
+    Sinapsi: ogni particella legge una direzione dal campo nel punto in cui
+    si trova e si sposta di conseguenza, lasciando una scia. Il campo e'
+    costruito come il "rotore" (curl) di un potenziale scalare (somma di
+    poche onde sinusoidali, calcolato analiticamente punto per punto, senza
+    bisogno di librerie di rumore esterne): questo garantisce
+    automaticamente un flusso "incomprimibile", senza pozzi dove le
+    particelle si accumulano tutte — il risultato ricorda la limatura di
+    ferro attorno a un magnete. Le particelle sono divise in tre gruppi
+    bassi/medi/alti (come in Magma/Mosaico, colore puro per gruppo, niente
+    blend): il numero di vortici del campo segue gli alti, l'ampiezza del
+    moto segue i bassi, la velocita' di evoluzione del campo segue il BPM."""
+    fattore, _k1, _k2, _k_loto, _onset, intensita, velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    bassi = feat["bassi"][i] * reattivita
+    alti = feat["alti"][i] * reattivita
+    presenza = feat["presenza"][i]
+
+    n_tot = int(np.clip(len(t1_arr) // 5, 60, 400))
+
+    if stato is None:
+        stato = {}
+    if "flu_pos" not in stato or len(stato["flu_pos"]) != n_tot:
+        rng = np.random.default_rng(507)
+        stato["flu_pos"] = np.stack([
+            rng.uniform(cx - raggio_x, cx + raggio_x, n_tot),
+            rng.uniform(cy - raggio_y, cy + raggio_y, n_tot),
+        ], axis=1)
+        terzo = n_tot // 3
+        gruppo = np.zeros(n_tot, dtype=np.int32)
+        gruppo[terzo:2 * terzo] = 1
+        gruppo[2 * terzo:] = 2
+        rng.shuffle(gruppo)
+        stato["flu_gruppo"] = gruppo
+        stato["flu_ordine"] = rng.permutation(n_tot)
+        stato["flu_tempo"] = 0.0
+        stato["flu_rng"] = rng
+
+    pos = stato["flu_pos"]
+    gruppo = stato["flu_gruppo"]
+    rng = stato["flu_rng"]
+
+    stato["flu_tempo"] += 0.015 + 0.03 * velocita
+    t = stato["flu_tempo"]
+
+    n_vortici = 3
+    scala = 1.0 / min(raggio_x, raggio_y)
+    freq = 1.8 + 2.5 * np.clip(alti, 0.0, 1.4)
+    ampiezza = min(raggio_x, raggio_y) * (0.35 + 0.5 * np.clip(bassi, 0.0, 1.4))
+
+    dx = pos[:, 0] - cx
+    dy = pos[:, 1] - cy
+    # il potenziale non serve calcolarlo esplicitamente: basta il suo
+    # "rotore" (curl), che da' automaticamente un campo incomprimibile
+    vx = np.zeros(n_tot)
+    vy = np.zeros(n_tot)
+    for k in range(n_vortici):
+        fase_k = t * (0.6 + 0.3 * k) + k * 2.1
+        fx = freq * scala * (1.0 + 0.3 * k)
+        fy = freq * scala * (1.0 - 0.2 * k)
+        arg = fx * dx + fy * dy + fase_k
+        vx += fy * np.cos(arg)
+        vy += -fx * np.cos(arg)
+    norma = np.sqrt(vx ** 2 + vy ** 2) + 1e-6
+    vx = vx / norma
+    vy = vy / norma
+
+    frazione_attiva = np.clip(0.3 + 0.7 * fattore, 0.15, 1.0) * max(presenza, 0.1)
+    n_attive = max(1, int(round(n_tot * frazione_attiva)))
+    attive = np.zeros(n_tot, dtype=bool)
+    attive[stato["flu_ordine"][:n_attive]] = True
+
+    passo = ampiezza * 0.02
+    prev = pos.copy()
+    pos[:, 0] += vx * passo
+    pos[:, 1] += vy * passo
+
+    # una particella che esce dall'area rientra da un punto casuale
+    # (dinamica continua, non a ondate), senza lasciare una scia fantasma
+    fuori = (np.abs(pos[:, 0] - cx) > raggio_x * 1.05) | (np.abs(pos[:, 1] - cy) > raggio_y * 1.05)
+    if fuori.any():
+        n_fuori = int(fuori.sum())
+        pos[fuori, 0] = rng.uniform(cx - raggio_x, cx + raggio_x, n_fuori)
+        pos[fuori, 1] = rng.uniform(cy - raggio_y, cy + raggio_y, n_fuori)
+        prev[fuori] = pos[fuori]
+
+    stato["flu_pos"] = pos
+
+    palette = (colore_bassi, colore_medi, colore_alti)
+    for k in range(n_tot):
+        if not attive[k]:
+            continue
+        colore = tuple(min(int(c * intensita), 255) for c in palette[gruppo[k]])
+        p1 = (int(prev[k, 0]), int(prev[k, 1]))
+        p2 = (int(pos[k, 0]), int(pos[k, 1]))
+        cv2.line(canvas, p1, p2, colore, max(1, int(spessore)), cv2.LINE_AA)
+
+    return canvas
+
+
+def disegna_muffa(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                   colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
+                   dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
+    """Muffa: simulazione di Physarum polycephalum (muffa melmosa), tecnica
+    agent-based diffusa nella generative art contemporanea (formalizzata da
+    Jeff Jones, 2010). Centinaia di agenti si muovono su una griglia,
+    depositando una scia chimica; ad ogni passo ciascuno "annusa" con tre
+    sensori (sinistra/centro/destra) davanti a se' e gira verso la
+    direzione con piu' scia, rinforzando i percorsi gia' battuti — dal
+    comportamento collettivo emergono reti venose organiche. Diverso da
+    Fulmine (scartato in precedenza): li' le particelle si "attaccavano" e
+    crescevano in modo permanente; qui gli agenti sono in movimento
+    CONTINUO per tutto il video e la scia evapora (decadimento + diffusione
+    ad ogni passo) — nulla si accumula in modo definitivo, la rete respira,
+    si riforma e si dissolve di continuo. Numero di agenti attivi segue
+    l'energia; quanto "strettamente" seguono la scia (angolo dei sensori)
+    segue gli alti; l'evaporazione segue il gate di presenza + i bassi; la
+    velocita' di avanzamento segue il BPM."""
+    fattore, _k1, _k2, _k_loto, _onset, intensita, velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    bassi = feat["bassi"][i] * reattivita
+    alti = feat["alti"][i] * reattivita
+    presenza = feat["presenza"][i]
+
+    h, w = canvas.shape[:2]
+    ris_w = max(80, int(np.sqrt(len(t1_arr)) * 5))
+    ris_h = max(45, int(ris_w * h / w))
+    n_tot = 260
+
+    if stato is None:
+        stato = {}
+    if "muf_trail" not in stato or stato["muf_trail"].shape != (ris_h, ris_w):
+        rng = np.random.default_rng(507)
+        stato["muf_trail"] = np.zeros((ris_h, ris_w), dtype=np.float32)
+        stato["muf_pos"] = np.stack([
+            rng.uniform(0, ris_w, n_tot),
+            rng.uniform(0, ris_h, n_tot),
+        ], axis=1)
+        stato["muf_heading"] = rng.uniform(0, 2 * np.pi, n_tot)
+        stato["muf_ordine"] = rng.permutation(n_tot)
+        stato["muf_rng"] = rng
+
+    trail = stato["muf_trail"]
+    pos = stato["muf_pos"]
+    heading = stato["muf_heading"]
+    rng = stato["muf_rng"]
+
+    # quanti agenti sono attivi (gli altri restano fermi dove sono; il
+    # deposito gia' presente evapora comunque insieme a tutto il resto)
+    frazione_attiva = np.clip(0.35 + 0.65 * fattore, 0.2, 1.0) * max(presenza, 0.15)
+    n_attive = max(1, int(round(n_tot * frazione_attiva)))
+    attivi = np.zeros(n_tot, dtype=bool)
+    attivi[stato["muf_ordine"][:n_attive]] = True
+    idx = np.where(attivi)[0]
+
+    sensor_dist = 2.5
+    sensor_angle = np.deg2rad(20 + 35 * np.clip(alti, 0.0, 1.4))
+    turn_step = np.deg2rad(12 + 20 * np.clip(alti, 0.0, 1.4))
+    passo = 0.5 + 1.6 * velocita
+
+    if len(idx) > 0:
+        h_i = heading[idx]
+        px = pos[idx, 0]
+        py = pos[idx, 1]
+
+        def _campiona(ang):
+            sx = np.clip((px + sensor_dist * np.cos(ang)) % ris_w, 0, ris_w - 1).astype(np.int32)
+            sy = np.clip((py + sensor_dist * np.sin(ang)) % ris_h, 0, ris_h - 1).astype(np.int32)
+            return trail[sy, sx]
+
+        val_c = _campiona(h_i)
+        val_l = _campiona(h_i - sensor_angle)
+        val_r = _campiona(h_i + sensor_angle)
+
+        turn = np.zeros(len(idx))
+        turn = np.where((val_l > val_c) & (val_l >= val_r), -turn_step, turn)
+        turn = np.where((val_r > val_c) & (val_r > val_l), turn_step, turn)
+        turn = turn + rng.uniform(-0.12, 0.12, len(idx))
+        h_i = h_i + turn
+
+        px = (px + passo * np.cos(h_i)) % ris_w
+        py = (py + passo * np.sin(h_i)) % ris_h
+
+        heading[idx] = h_i
+        pos[idx, 0] = px
+        pos[idx, 1] = py
+
+        ix = np.clip(px, 0, ris_w - 1).astype(np.int32)
+        iy = np.clip(py, 0, ris_h - 1).astype(np.int32)
+        np.add.at(trail, (iy, ix), 0.8)
+
+    # diffusione + evaporazione: la rete non si accumula mai in modo
+    # permanente, respira di continuo
+    trail = cv2.blur(trail, (3, 3))
+    if presenza > 0.1:
+        decadimento = np.clip(0.90 - 0.10 * np.clip(bassi, 0.0, 1.4), 0.75, 0.95)
+    else:
+        decadimento = 0.85
+    trail = trail * decadimento
+
+    stato["muf_trail"] = trail
+    stato["muf_pos"] = pos
+    stato["muf_heading"] = heading
+
+    t_norm = np.clip(trail / 4.0, 0.0, 1.0)
+    bg_arr = np.array(colore_bg, dtype=np.float32)
+    cb = np.array(colore_bassi, dtype=np.float32)
+    cm = np.array(colore_medi, dtype=np.float32)
+    ca = np.array(colore_alti, dtype=np.float32)
+    seg = t_norm * 3.0
+    f0 = np.clip(seg, 0.0, 1.0)[..., None]
+    f1 = np.clip(seg - 1.0, 0.0, 1.0)[..., None]
+    f2 = np.clip(seg - 2.0, 0.0, 1.0)[..., None]
+    colore_arr = bg_arr + (cb - bg_arr) * f0 + (cm - cb) * f1 + (ca - cm) * f2
+
+    finale = bg_arr + (colore_arr - bg_arr) * intensita
+    campo_grande = cv2.resize(finale.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)
+    canvas[:] = np.clip(campo_grande, 0, 255).astype(np.uint8)
+
+    return canvas
+
+
 MOTORI = {
     "Deriva (cartesiana)": {"funzione": disegna_ellisse, "n_step": 900, "fade": 0.90},
     "Fioritura (polare)": {"funzione": disegna_loto, "n_step": 3300, "fade": 0.80},
@@ -2887,6 +3180,9 @@ MOTORI = {
     "Circuito (Wireworld)": {"funzione": disegna_circuito, "n_step": 900, "fade": 0.0},
     "Sorte (chaos game)": {"funzione": disegna_sorte, "n_step": 900, "fade": 0.0},
     "Caos (biforcazione)": {"funzione": disegna_caos, "n_step": 900, "fade": 0.0},
+    "Radici (frattale di Newton)": {"funzione": disegna_radici, "n_step": 900, "fade": 0.0},
+    "Flusso (flow field)": {"funzione": disegna_flusso, "n_step": 900, "fade": 0.75},
+    "Muffa (Physarum)": {"funzione": disegna_muffa, "n_step": 900, "fade": 0.0},
 }
 
 
