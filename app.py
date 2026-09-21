@@ -1474,13 +1474,12 @@ def disegna_epicicli(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, color
     medi/alti/energia complessiva), le velocita' angolari sono multipli
     interi di una velocita' base legata al BPM, come in una vera serie
     di Fourier dove le armoniche piu' alte ruotano piu' veloci."""
-    fattore, _k1, _k2, _k_loto, _onset, intensita, velocita = _parametri_da_audio(
+    fattore, _k1, _k2, _k_loto, onset, intensita, velocita = _parametri_da_audio(
         feat, i, t_frame, fps, reattivita
     )
-    bassi = feat["bassi"][i]
-    medi = feat["medi"][i]
-    alti = feat["alti"][i]
-    h, w = canvas.shape[:2]
+    bassi = feat["bassi"][i] * reattivita
+    medi = feat["medi"][i] * reattivita
+    alti = feat["alti"][i] * reattivita
 
     if stato is None:
         stato = {}
@@ -1488,12 +1487,21 @@ def disegna_epicicli(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, color
         stato["epi_fase"] = 0.0
         stato["epi_traccia"] = []
 
-    stato["epi_fase"] += 0.03 * velocita
+    # velocita' di rotazione: non solo il ritmo medio del brano (velocita',
+    # dal BPM) ma anche l'energia istantanea e gli attacchi -- cosi' la
+    # catena visibilmente accelera/rallenta a tempo con la musica, invece
+    # di girare a un ritmo fisso sganciato da quello che si sente
+    stato["epi_fase"] += (0.018 + 0.03 * np.clip(fattore, 0.0, 1.5) + 0.035 * onset) * velocita
     fase = stato["epi_fase"]
 
     n_armoniche = 6
     bande = [bassi, medi, alti, (bassi + medi) / 2, (medi + alti) / 2, np.clip(fattore, 0.0, 1.5) / 1.5]
-    raggio_base = min(w, h) * 0.22
+    # raggio ancorato a raggio_x/raggio_y come tutte le altre forme (prima
+    # usava una propria scala fissa piu' piccola, min(w,h)*0.22, che
+    # ignorava del tutto raggio_x/raggio_y e restava sempre piccola anche
+    # a piena energia); baseline alzata cosi' la catena resta ben visibile
+    # anche nei passaggi piu' calmi, non solo a energia massima
+    raggio_base = min(raggio_x, raggio_y) * 0.62
 
     colore_base = _colore_miscelato(feat, i, colore_bassi, colore_medi, colore_alti)
     colore_cerchio = tuple(min(int(c * intensita * 0.35), 255) for c in colore_base)
@@ -1501,7 +1509,7 @@ def disegna_epicicli(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, color
 
     x, y = float(cx), float(cy)
     for k in range(1, n_armoniche + 1):
-        r = raggio_base * (0.15 + 0.5 * bande[k - 1]) / k
+        r = raggio_base * (0.35 + 0.65 * np.clip(bande[k - 1], 0.0, 1.4)) / k
         ang = fase * k + k * 0.7
         x_next = x + r * np.cos(ang)
         y_next = y + r * np.sin(ang)
