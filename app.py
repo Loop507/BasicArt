@@ -1469,12 +1469,16 @@ def disegna_epicicli(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, color
     di Fourier, resa popolare da video divulgativi (3blue1brown) ma
     matematica generica, non legata ad alcun riferimento specifico. La
     punta dell'ultimo cerchio lascia una traccia che si accumula nel
-    tempo, disegnando un percorso via via piu' intricato — curve
-    continue, complementari agli spigoli dritti di Poliedro. Il raggio
-    di ogni armonica e' pilotato da una banda diversa del brano (bassi/
-    medi/alti/energia complessiva), le velocita' angolari sono multipli
-    interi di una velocita' base legata al BPM, come in una vera serie
-    di Fourier dove le armoniche piu' alte ruotano piu' veloci."""
+    tempo. Ogni armonica ruota a un multiplo quasi-intero (non esattamente
+    intero) della fase base: una piccola oscillazione di disaccordo,
+    legata agli alti, fa si' che la catena non torni MAI esattamente al
+    punto di partenza come farebbe una vera serie di Fourier chiusa (che
+    ridisegnerebbe sempre lo stesso rosone, sembrando "un cerchio che
+    gira") — la curva tracciata precede lentamente e continua a
+    trasformarsi per tutta la durata del video, come un vero Spirografo
+    con ingranaggi leggermente disallineati. Il raggio di ogni armonica e'
+    pilotato da una banda diversa del brano (bassi/medi/alti/energia
+    complessiva), la velocita' angolare base segue il BPM e l'energia."""
     fattore, _k1, _k2, _k_loto, onset, intensita, velocita = _parametri_da_audio(
         feat, i, t_frame, fps, reattivita
     )
@@ -1511,7 +1515,12 @@ def disegna_epicicli(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, color
     x, y = float(cx), float(cy)
     for k in range(1, n_armoniche + 1):
         r = raggio_base * (0.35 + 0.65 * np.clip(bande[k - 1], 0.0, 1.4)) / k
-        ang = fase * k + k * 0.7
+        # disaccordo: ogni armonica gira a un multiplo LEGGERMENTE non
+        # intero della fase base, cosi' la figura non si richiude mai
+        # esattamente su se stessa -- l'ampiezza del disaccordo segue gli
+        # alti (piu' alti = la forma muta piu' in fretta)
+        deriva = 0.05 * (0.4 + alti) * np.sin(t_frame * 0.0022 * (0.6 + 0.35 * k) + k * 2.1)
+        ang = fase * (k + deriva) + k * 0.7
         x_next = x + r * np.cos(ang)
         y_next = y + r * np.sin(ang)
         cv2.circle(canvas, (int(x), int(y)), max(1, int(r)), colore_cerchio, 1, cv2.LINE_AA)
