@@ -178,18 +178,28 @@ def _spettro_a_barre(y, sr, hop_length, n_frames, n_barre=140):
 def _colore_miscelato(feat, i, colore_bassi, colore_medi, colore_alti):
     """Miscela i tre colori (bassi/medi/alti) pesandoli in base all'energia
     relativa di ciascuna banda nel brano in questo istante — usato dalle
-    forme che non hanno gia' una struttura a bande (Deriva, Fioritura,
-    Pulviscolo, Graffio, Frontiera), cosi' il colore stesso segue il
-    timbro del brano momento per momento. Usa le "quote" di dominanza
-    (feat['quota_*'], calcolate su energia grezza, non normalizzata banda
-    per banda) e non bassi/medi/alti normalizzati: questi ultimi sono
-    stirati ciascuno sul proprio range 0..1 e quindi non riflettono la
-    vera dominanza relativa, producendo un colore quasi costante invece
-    che uno che si sposta chiaramente verso il colore della banda che
-    prevale davvero in quell'istante."""
-    wb = feat["quota_bassi"][i]
-    wm = feat["quota_medi"][i]
-    wa = feat["quota_alti"][i]
+    forme che non hanno gia' una struttura a bande propria (Deriva,
+    Fioritura, Pulviscolo, Graffio, Frontiera, Sinapsi, Labirinto,
+    Risonanza, Poliedro, Epicicli, Iscrizione, Plasma, Formica, Galleria,
+    Sorte, Caos), cosi' il colore stesso segue il timbro del brano momento
+    per momento. Usa le "quote" di dominanza (feat['quota_*'], energia
+    grezza non normalizzata banda per banda) affilate con un esponente:
+    una musica reale raramente da' a UNA banda una dominanza vicina al
+    100% -- di solito le tre quote sono abbastanza vicine tra loro (es.
+    0.40/0.35/0.25), e una miscela lineare di pesi cosi' vicini produce
+    quasi sempre un colore "medio" pressoche' fisso (rosso+bianco -> rosa
+    costante), non uno che si sposta visibilmente fra i tre colori scelti.
+    Elevare le quote a una potenza (poi rinormalizzare) amplifica anche un
+    vantaggio modesto di una banda, dando un colore che pende chiaramente
+    verso quella dominante invece di restare sempre "in mezzo"."""
+    quota = np.array([feat["quota_bassi"][i], feat["quota_medi"][i], feat["quota_alti"][i]], dtype=np.float64)
+    quota_affilata = quota ** 2.6
+    tot = quota_affilata.sum()
+    if tot > 1e-9:
+        quota_affilata = quota_affilata / tot
+    else:
+        quota_affilata = quota
+    wb, wm, wa = quota_affilata
     return tuple(wb * colore_bassi[c] + wm * colore_medi[c] + wa * colore_alti[c] for c in range(3))
 
 
