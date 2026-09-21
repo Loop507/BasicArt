@@ -176,31 +176,22 @@ def _spettro_a_barre(y, sr, hop_length, n_frames, n_barre=140):
 
 
 def _colore_miscelato(feat, i, colore_bassi, colore_medi, colore_alti):
-    """Miscela i tre colori (bassi/medi/alti) pesandoli in base all'energia
-    relativa di ciascuna banda nel brano in questo istante — usato dalle
-    forme che non hanno gia' una struttura a bande propria (Deriva,
-    Fioritura, Pulviscolo, Graffio, Frontiera, Sinapsi, Labirinto,
-    Risonanza, Poliedro, Epicicli, Iscrizione, Plasma, Formica, Galleria,
-    Sorte, Caos), cosi' il colore stesso segue il timbro del brano momento
-    per momento. Usa le "quote" di dominanza (feat['quota_*'], energia
-    grezza non normalizzata banda per banda) affilate con un esponente:
-    una musica reale raramente da' a UNA banda una dominanza vicina al
-    100% -- di solito le tre quote sono abbastanza vicine tra loro (es.
-    0.40/0.35/0.25), e una miscela lineare di pesi cosi' vicini produce
-    quasi sempre un colore "medio" pressoche' fisso (rosso+bianco -> rosa
-    costante), non uno che si sposta visibilmente fra i tre colori scelti.
-    Elevare le quote a una potenza (poi rinormalizzare) amplifica anche un
-    vantaggio modesto di una banda, dando un colore che pende chiaramente
-    verso quella dominante invece di restare sempre "in mezzo"."""
-    quota = np.array([feat["quota_bassi"][i], feat["quota_medi"][i], feat["quota_alti"][i]], dtype=np.float64)
-    quota_affilata = quota ** 2.6
-    tot = quota_affilata.sum()
-    if tot > 1e-9:
-        quota_affilata = quota_affilata / tot
-    else:
-        quota_affilata = quota
-    wb, wm, wa = quota_affilata
-    return tuple(wb * colore_bassi[c] + wm * colore_medi[c] + wa * colore_alti[c] for c in range(3))
+    """Sceglie il colore PURO della banda che domina in questo istante
+    (bassi/medi/alti) — nessuna sfumatura intermedia, su richiesta
+    esplicita: niente colore mescolato, i tre colori scelti devono
+    alternarsi distintamente, come gia' accade nelle forme a colorazione
+    discreta (Sismografo, Magma, ...). Usato dalle forme che non hanno
+    gia' una struttura a bande propria (Deriva, Fioritura, Pulviscolo,
+    Graffio, Frontiera, Sinapsi, Labirinto, Risonanza, Poliedro, Epicicli,
+    Iscrizione, Plasma, Formica, Galleria, Sorte, Caos). Le "quote"
+    (feat['quota_*'], energia grezza non normalizzata banda per banda)
+    sono gia' smussate nel tempo (vedi _smussa), quindi il cambio di
+    colore resta comunque morbido invece che a scatti bruschi frame per
+    frame, pur restando un colore netto e non un blend."""
+    quota = (feat["quota_bassi"][i], feat["quota_medi"][i], feat["quota_alti"][i])
+    palette = (colore_bassi, colore_medi, colore_alti)
+    vincitore = int(np.argmax(quota))
+    return tuple(palette[vincitore])
 
 
 def _stima_bpm_e_battiti(y, sr, hop_length, fps, n_frames):
