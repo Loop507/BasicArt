@@ -1189,8 +1189,8 @@ def disegna_labirinto(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colo
     fattore, _k1, _k2, _k_loto, _onset, intensita, velocita = _parametri_da_audio(
         feat, i, t_frame, fps, reattivita
     )
-    bassi = feat["bassi"][i]
-    alti = feat["alti"][i]
+    bassi = feat["bassi"][i] * reattivita
+    alti = feat["alti"][i] * reattivita
     h, w = canvas.shape[:2]
 
     n_lato = max(6, int(np.sqrt(len(t1_arr)) * 1.4))
@@ -1246,9 +1246,9 @@ def disegna_risonanza(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colo
     fattore, _k1, _k2, _k_loto, onset, intensita, _velocita = _parametri_da_audio(
         feat, i, t_frame, fps, reattivita
     )
-    bassi = feat["bassi"][i]
-    medi = feat["medi"][i]
-    alti = feat["alti"][i]
+    bassi = feat["bassi"][i] * reattivita
+    medi = feat["medi"][i] * reattivita
+    alti = feat["alti"][i] * reattivita
     h, w = canvas.shape[:2]
 
     n_modo = 2 + int(6 * bassi)
@@ -1306,8 +1306,8 @@ def disegna_statica(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore
     fattore, _k1, _k2, _k_loto, _onset, intensita, velocita = _parametri_da_audio(
         feat, i, t_frame, fps, reattivita
     )
-    bassi = feat["bassi"][i]
-    alti = feat["alti"][i]
+    bassi = feat["bassi"][i] * reattivita
+    alti = feat["alti"][i] * reattivita
     h, w = canvas.shape[:2]
 
     regole_caotiche = [30, 45, 105, 150, 169, 225]
@@ -1412,9 +1412,9 @@ def disegna_poliedro(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, color
     fattore, _k1, _k2, _k_loto, _onset, intensita, velocita = _parametri_da_audio(
         feat, i, t_frame, fps, reattivita
     )
-    bassi = feat["bassi"][i]
-    medi = feat["medi"][i]
-    alti = feat["alti"][i]
+    bassi = feat["bassi"][i] * reattivita
+    medi = feat["medi"][i] * reattivita
+    alti = feat["alti"][i] * reattivita
     h, w = canvas.shape[:2]
 
     if stato is None:
@@ -1556,9 +1556,9 @@ def disegna_plasma(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_
     fattore, _k1, _k2, _k_loto, _onset, intensita, velocita = _parametri_da_audio(
         feat, i, t_frame, fps, reattivita
     )
-    bassi = feat["bassi"][i]
-    medi = feat["medi"][i]
-    alti = feat["alti"][i]
+    bassi = feat["bassi"][i] * reattivita
+    medi = feat["medi"][i] * reattivita
+    alti = feat["alti"][i] * reattivita
     h, w = canvas.shape[:2]
 
     ris_w = max(80, int(np.sqrt(len(t1_arr)) * 8))
@@ -3219,7 +3219,11 @@ def genera_video(feat, path_out, width, height, colore_bg, colore_bassi, colore_
 
     n_frames = feat["n_frames"]
     progress = st.progress(0, text="RENDER :: generazione frame in corso...")
-    stato = {}   # stato persistente (usato solo da Graffio/Aritmia/Iscrizione, ignorato dalle altre)
+    stato = {}   # stato persistente per-render: azzerato ad ogni chiamata cosi'
+                 # le forme che ne hanno bisogno (Graffio, Aritmia, Iscrizione,
+                 # Sinapsi, Labirinto, Poliedro e quasi tutte le forme aggiunte
+                 # dopo Plasma) partono sempre pulite, senza contaminazioni
+                 # da un render precedente o da un'altra forma
 
     for i in range(n_frames):
         # fade verso il nero (scia stile fosfori)
@@ -3279,7 +3283,7 @@ def genera_anteprima(feat, width, height, colore_bg, colore_bassi, colore_medi, 
 
     canvas = np.zeros((height, width, 3), dtype=np.float32)
     bg = np.array(colore_bg, dtype=np.float32)
-    stato = {}   # stato persistente (usato solo da Graffio/Aritmia)
+    stato = {}   # stato persistente per-render, stesso principio di genera_video
 
     for i in range(i_inizio, i_picco + 1):
         canvas = canvas * fade_alpha + bg * (1 - fade_alpha)
