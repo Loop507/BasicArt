@@ -1770,11 +1770,11 @@ def disegna_magma(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_b
     px_i = cx + pos[:, 0] * raggio_x
     py_i = cy + pos[:, 1] * raggio_y
 
-    # risoluzione di calcolo ridotta, legata alle dimensioni del canvas (qui
-    # non alla densita': t1_arr controlla il NUMERO di sorgenti, non il
-    # dettaglio del campo)
-    ris_w = max(90, w // 6)
-    ris_h = max(50, h // 6)
+    # risoluzione di calcolo: prima era w//6 (troppo bassa, dava bolle
+    # sfocate una volta riportate a piena risoluzione) — ora w//3, il
+    # doppio del dettaglio, per contorni visibilmente piu' definiti
+    ris_w = max(160, w // 3)
+    ris_h = max(90, h // 3)
     xs_lin = np.linspace(0, w, ris_w, dtype=np.float32)
     ys_lin = np.linspace(0, h, ris_h, dtype=np.float32)
     grid_x, grid_y = np.meshgrid(xs_lin, ys_lin)
@@ -1783,7 +1783,16 @@ def disegna_magma(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_b
     dy = grid_y[None, :, :] - py_i[:, None, None].astype(np.float32)
     dist2 = dx * dx + dy * dy
     r2 = (raggio_pix.astype(np.float32) ** 2)[:, None, None]
-    campo_i = r2 / (dist2 + r2 * 0.25 + 1.0)      # falloff inverso al quadrato, smorzato vicino al centro
+    # falloff: PRIMA era r2/(dist2+r2*0.25+1), troppo graduale -- al bordo
+    # nominale di una sorgente il campo era ancora all'80% del massimo,
+    # quindi con piu' sorgenti tutto si fondeva in un'unica macchia
+    # indistinta ("non si vedono le bolle, sono tutte sfocate"). Elevando
+    # il rapporto (distanza/raggio) al cubo il campo scende molto piu'
+    # in fretta appena si esce dal nucleo di una sorgente: le bolle
+    # restano visibilmente separate e si fondono solo dove si toccano
+    # davvero, come vere metaballs
+    rapporto = dist2 / (r2 + 1e-6)
+    campo_i = 1.0 / (rapporto ** 3 + 0.02)
     campo = campo_i.sum(axis=0)
 
     colore_arr = np.zeros((ris_h, ris_w, 3), dtype=np.float32)
@@ -1794,14 +1803,19 @@ def disegna_magma(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_b
     colore_arr /= (campo[..., None] + 1e-6)
 
     # soglia leggermente "respirante" sugli attacchi: sugli onset le macchie
-    # si allargano un istante, invece di restare a dimensione fissa
+    # si allargano un istante, invece di restare a dimensione fissa. Banda
+    # di transizione dimezzata rispetto a prima (era soglia*0.9, troppo
+    # larga: contribuiva a far sembrare i contorni sfocati anche a piena
+    # risoluzione) per un bordo piu' netto tra macchia e sfondo
     soglia = 1.0 - 0.15 * onset
-    frac = np.clip((campo - soglia * 0.5) / (soglia * 0.9), 0.0, 1.0)[..., None]
+    frac = np.clip((campo - soglia * 0.5) / (soglia * 0.35), 0.0, 1.0)[..., None]
 
     bg_arr = np.array(colore_bg, dtype=np.float32)
     mescolato = bg_arr + (colore_arr - bg_arr) * frac
     finale = bg_arr + (mescolato - bg_arr) * intensita
-    campo_grande = cv2.resize(finale, (w, h), interpolation=cv2.INTER_LINEAR)
+    # INTER_CUBIC invece di INTER_LINEAR: ricostruzione piu' nitida in fase
+    # di ingrandimento, coerente con l'obiettivo di bolle ben definite
+    campo_grande = cv2.resize(finale, (w, h), interpolation=cv2.INTER_CUBIC)
     canvas[:] = np.clip(campo_grande, 0, 255).astype(np.uint8)
 
     return canvas
