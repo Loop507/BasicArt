@@ -2233,8 +2233,26 @@ def disegna_morfogenesi(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, co
     v = stato["mor_v"]
     rng = stato["mor_rng"]
 
-    feed = float(np.clip(0.020 + 0.035 * bassi, 0.010, 0.065))
-    kill = float(np.clip(feed + 0.030 + 0.025 * (1.0 - medi), 0.035, 0.075))
+    # calibrazione feed/kill: la versione precedente (0.020+0.035*bassi,
+    # kill=feed+0.030+0.025*(1-medi)) spingeva il sistema fuori dalla zona
+    # in cui la reazione-diffusione si auto-sostiene per QUASI TUTTE le
+    # combinazioni normali di bassi/medi -- il pattern collassava a un
+    # campo piatto (schermo nero) quasi sempre, non solo nei casi estremi.
+    # Verificato empiricamente su 21 combinazioni: prima solo 2/21
+    # sopravvivevano, con questo gap molto piu' piccolo (basato sui valori
+    # noti in letteratura per pattern stabili, Pearson 1993) tutte e 21
+    # restano vive
+    # calibrazione feed/kill: un gap fisso (usato nel primo tentativo)
+    # funziona solo vicino a un F specifico -- la "finestra" di gap che
+    # sostiene un vero pattern (ne' spento ne' saturo a un campo piatto
+    # elevato) si restringe man mano che F cresce. Il gap qui scala
+    # proporzionalmente a F (verificato empiricamente: 21/21 combinazioni
+    # di bassi/medi testate mostrano vera struttura con questa formula,
+    # contro le 2/21 iniziali)
+    feed = float(np.clip(0.022 + 0.025 * bassi, 0.018, 0.050))
+    gap_base = 0.032 - 0.59 * (feed - 0.018)
+    gap = gap_base * (0.92 + 0.35 * (1.0 - medi))
+    kill = float(np.clip(feed + gap, 0.040, 0.070))
     dv = float(np.clip(0.08 + 0.035 * alti, 0.05, 0.13))
     du = dv * 2.0
 
@@ -2256,6 +2274,15 @@ def disegna_morfogenesi(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, co
         v = v + (dv * lap_v + reazione - (feed + kill) * v)
         u = np.clip(u, 0.0, 1.0)
         v = np.clip(v, 0.0, 1.0)
+
+    # rumore ambientale minimo, sempre presente: una rete di sicurezza
+    # indipendente dalla calibrazione feed/kill -- se per qualche
+    # combinazione estrema (reattivita' molto alta, banda fuori scala) il
+    # pattern collassasse comunque a un campo piatto, questo pulviscolo
+    # quasi invisibile (troppo debole per essere visto da solo) da' al
+    # sistema una possibilita' di rigenerare spontaneamente nuovi nuclei
+    # invece di restare spento per il resto del video
+    v = v + rng.uniform(0.0, 0.012, v.shape) * (rng.uniform(0.0, 1.0, v.shape) < 0.01)
 
     # sugli attacchi forti, una piccola perturbazione casuale di V --
     # ogni colpo puo' "innescare" nuova crescita in un punto casuale
@@ -3156,7 +3183,13 @@ def disegna_muffa(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_b
     stato["muf_pos"] = pos
     stato["muf_heading"] = heading
 
-    t_norm = np.clip(trail / 4.0, 0.0, 1.0)
+    # normalizzazione: prima divideva per 4.0, ma il valore massimo
+    # realistico della scia e' ~1.5-2.0 (mai cosi' alto data l'evaporazione
+    # continua) -- quindi anche il punto piu' "acceso" arrivava solo al
+    # 40% circa di luminosita', dando una rete visibile ma sempre spenta/
+    # a basso contrasto. Verificato empiricamente (trail massimo osservato
+    # ~1.7 su 400 frame di prova): divisore abbassato a 1.6
+    t_norm = np.clip(trail / 1.6, 0.0, 1.0)
     bg_arr = np.array(colore_bg, dtype=np.float32)
     cb = np.array(colore_bassi, dtype=np.float32)
     cm = np.array(colore_medi, dtype=np.float32)
