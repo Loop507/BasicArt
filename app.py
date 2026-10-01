@@ -46,7 +46,7 @@ RISOLUZIONI = {
     "1:1   (720x720)": (720, 720),
 }
 
-FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)", "Plasma (interferenza)", "Cometa (starfield prospettico)", "Magma (metaballs)", "Mosaico (celle di Voronoi)", "Galleria (tunnel prospettico)", "Braci (fuoco algoritmico)", "Vita (automa cellulare 2D)", "Morfogenesi (reazione-diffusione)", "Increspatura (onde d'impatto)", "Formica (automa di Langton)", "Circuito (Wireworld)", "Lama (3 linee)", "Radici (frattale di Newton)", "Flusso (flow field)", "Muffa (Physarum)"]
+FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)", "Plasma (interferenza)", "Cometa (starfield prospettico)", "Magma (metaballs)", "Mosaico (celle di Voronoi)", "Galleria (tunnel prospettico)", "Braci (fuoco algoritmico)", "Vita (automa cellulare 2D)", "Morfogenesi (reazione-diffusione)", "Increspatura (onde d'impatto)", "Formica (automa di Langton)", "Circuito (Wireworld)", "Lama (3 linee)", "Radici (frattale di Newton)", "Flusso (flow field)", "Muffa (Physarum)", "Maschera (bitwise rotozoom)", "Traccia (forma d'onda XY)", "Reticolo (moire)", "Corde (curve a filo)"]
 
 # font veri (TTF) per "Iscrizione" — cartella "fonts/" accanto a questo script.
 # Se mancante, l'app ripiega automaticamente sui font Hershey di OpenCV
@@ -270,6 +270,23 @@ def _stima_bpm_e_battiti(y, sr, hop_length, fps, n_frames):
 # ----------------------------------------------------------------------
 # DSP: estrazione feature audio (pura, no AI)
 # ----------------------------------------------------------------------
+def _finestre_onda(y, sr, hop_length, n_frames, n_punti=256):
+    """Per ogni frame video, una finestra della FORMA D'ONDA reale del brano
+    (n_punti campioni), normalizzata sul 99.5% percentile dell'ampiezza
+    dell'intero brano: i passaggi piano restano piccoli, i forti grandi.
+    Serve a Traccia, l'unica forma guidata dal segnale e non da feature
+    estratte. float16: ~4 MB per 4 minuti a 30 fps."""
+    ref = float(np.percentile(np.abs(y), 99.5))
+    ref = ref if ref > 1e-9 else 1.0
+    onda = np.zeros((n_frames, n_punti), dtype=np.float16)
+    idx_rel = np.linspace(0, max(1, hop_length) - 1, n_punti).astype(np.int64)
+    for f in range(n_frames):
+        a = f * hop_length
+        idx = np.clip(a + idx_rel, 0, len(y) - 1)
+        onda[f] = np.clip(y[idx] / ref, -1.5, 1.5)
+    return onda
+
+
 def analizza_audio(path_audio, fps, durata_max=MAX_DURATION_S):
     """Estrae feature frame-per-frame sincronizzate al framerate video."""
     y, sr = librosa.load(path_audio, sr=None, mono=True, duration=durata_max)
@@ -291,6 +308,7 @@ def analizza_audio(path_audio, fps, durata_max=MAX_DURATION_S):
     onset_env = _norm(_adatta(onset_env, n_frames))
 
     bordi = _bordi_bande(y, sr)
+    onda = _finestre_onda(y, sr, hop_length, n_frames)
     bassi, medi, alti, quota_bassi, quota_medi, quota_alti = _bande_spettrali(y, sr, hop_length, n_frames, bordi)
     spettro, spettro_classe = _spettro_a_barre(y, sr, hop_length, n_frames, bordi)
     bpm, battiti_video = _stima_bpm_e_battiti(y, sr, hop_length, fps, n_frames)
@@ -321,6 +339,7 @@ def analizza_audio(path_audio, fps, durata_max=MAX_DURATION_S):
         "spettro": spettro,
         "spettro_classe": spettro_classe,
         "bordi_bande": bordi,
+        "onda": onda,
         "presenza": presenza,
         "bpm": bpm,
         "battiti_video": battiti_video,
@@ -3021,6 +3040,247 @@ def disegna_muffa(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_b
     return canvas
 
 
+def disegna_maschera(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                     colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
+                     dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
+    """Maschera: logica a bit + rotozoom. Una texture 256x256 NON disegnata
+    ma calcolata con operazioni intere sulle coordinate (U,V) -- XOR, AND e
+    prodotto troncato, come i vecchi effetti XOR/bytebeat -- poi ruotata e
+    ingrandita (rotozoomer) sullo schermo. Tre strati a bit, uno per banda,
+    ciascuno nel proprio colore puro (nessun blend):
+      bassi -> XOR, piani di bit alti (quadrati grandi, scacchiere frattali)
+      medi  -> AND, (U & V): triangoli di Sierpinski a scala media
+      alti  -> (3U) XOR V, piani bassi: grana fine
+    Il PIANO di bit di ogni strato scende di livello con l'energia della sua
+    banda (struttura piu' fitta quando la banda spinge) e lo strato sparisce
+    del tutto se la banda e' sotto soglia: un brano senza acuti non mostra il
+    colore degli alti. Angolo -> medi + BPM, zoom -> bassi, salto di offset
+    sugli attacchi. Tutto binario, senza interpolazione morbida."""
+    _fattore, _k1, _k2, _kl, onset, intensita, velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    bassi = float(np.clip(feat["bassi"][i] * reattivita, 0.0, 1.0))
+    medi = float(np.clip(feat["medi"][i] * reattivita, 0.0, 1.0))
+    alti = float(np.clip(feat["alti"][i] * reattivita, 0.0, 1.0))
+    onset = float(np.clip(onset, 0.0, 1.0))
+
+    h, w = canvas.shape[:2]
+    ris_w = max(120, int(np.sqrt(len(t1_arr)) * 8))
+    ris_h = max(68, int(ris_w * h / w))
+
+    if stato is None:
+        stato = {}
+    chiave = ("maschera", ris_w, ris_h)
+    if stato.get("maschera_chiave") != chiave:
+        xs = (np.arange(ris_w, dtype=np.float32) - ris_w / 2.0)[None, :]
+        ys = (np.arange(ris_h, dtype=np.float32) - ris_h / 2.0)[:, None]
+        stato["maschera_xs"] = np.broadcast_to(xs, (ris_h, ris_w)).copy()
+        stato["maschera_ys"] = np.broadcast_to(ys, (ris_h, ris_w)).copy()
+        stato["maschera_chiave"] = chiave
+    xs, ys = stato["maschera_xs"], stato["maschera_ys"]
+
+    # rotozoom: angolo continuo nel tempo + spinta dei medi, zoom dai bassi
+    angolo = t_frame * 0.010 * velocita + 1.7 * medi + 0.25 * onset
+    scala = 0.55 + 0.95 * bassi
+    ca, sa = np.cos(angolo), np.sin(angolo)
+    off = int(t_frame * 0.30 * velocita) + int(24 * onset)
+    U = np.floor((xs * ca - ys * sa) * scala).astype(np.int32) + off
+    V = np.floor((xs * sa + ys * ca) * scala).astype(np.int32) - off // 2
+    U &= 255
+    V &= 255
+
+    piano_b = 5 - int(bassi * 2.99)          # 5,4,3 (quadrati da 32 a 8 texel)
+    piano_m = 4 - int(medi * 2.99)           # 4,3,2
+    piano_a = 2 - int(alti * 2.99)           # 2,1,0 (grana fine)
+    maschera_b = ((U ^ V) >> piano_b) & 1
+    maschera_m = ((U & V) >> piano_m) & 1
+    maschera_a = (((U * 3) & 255) ^ V) >> piano_a & 1
+
+    bg_arr = np.array(colore_bg, dtype=np.float32)
+    campo = np.broadcast_to(bg_arr, (ris_h, ris_w, 3)).copy()
+    soglia = 0.12
+    # dal grande al fine: i dettagli fini stanno sopra le campiture grandi
+    for valore, m, col in ((bassi, maschera_b, colore_bassi),
+                           (medi, maschera_m, colore_medi),
+                           (alti, maschera_a, colore_alti)):
+        if valore > soglia:
+            campo[m.astype(bool)] = np.array(col, dtype=np.float32)
+
+    k = float(np.clip(intensita, 0.0, 1.0))
+    finale = bg_arr + (campo - bg_arr) * k
+    grande = cv2.resize(finale.astype(np.float32), (w, h), interpolation=cv2.INTER_NEAREST)
+    canvas[:] = np.clip(grande, 0, 255).astype(np.uint8)
+    return canvas
+
+
+def disegna_traccia(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                    colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
+                    dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
+    """Traccia: la forma d'onda VERA del brano come traiettoria in un piano
+    a ritardo (ogni campione contro quello successivo a distanza d), come
+    su un oscilloscopio in modalita' XY. A differenza delle altre forme non
+    usa feature estratte (RMS, bande...) per decidere la forma: la forma
+    ESCE dal segnale. Un suono puro disegna un'ellisse, un accordo una
+    rosetta, il rumore un groviglio, un colpo di cassa un'ellisse che si
+    allarga e collassa. L'ampiezza e' quella reale del brano (normalizzata
+    sul suo massimo), il ritardo d dipende dal timbro del brano (centroide:
+    suoni gravi = ritardo lungo). Il segmento e' ruotato di 45 gradi per
+    avere l'asse principale orizzontale. Colore puro della banda dominante,
+    linea dura (LINE_8), nessuna sfumatura."""
+    if "onda" not in feat:
+        return canvas
+    _fattore, _k1, _k2, _kl, _onset, intensita, _vel = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    onda = feat["onda"][i].astype(np.float32) * float(max(reattivita, 0.2))
+    n = len(onda)
+    centroide = float(np.clip(feat["centroid"][i], 0.0, 1.0))
+    d = int(np.clip(2 + 28 * (1.0 - centroide) ** 1.5, 2, n // 4))
+
+    a = onda[:-d]
+    b = onda[d:]
+    u = (a + b) * 0.7071
+    v = (b - a) * 0.7071
+    px = cx + u * raggio_x * 0.95
+    py = cy - v * raggio_y * 1.25
+    pts = np.stack([px, py], axis=1)
+    pts = np.clip(pts, [0, 0], [canvas.shape[1] - 1, canvas.shape[0] - 1]).astype(np.int32)
+
+    bg_arr = np.array(colore_bg, dtype=np.float32)
+    col = np.array(_colore_miscelato(feat, i, colore_bassi, colore_medi, colore_alti), dtype=np.float32)
+    col = bg_arr + (col - bg_arr) * float(np.clip(intensita, 0.0, 1.0))
+    colore = tuple(int(c) for c in np.clip(col, 0, 255))
+    cv2.polylines(canvas, [pts.reshape(-1, 1, 2)], False, colore, int(max(1, spessore)), cv2.LINE_8)
+    return canvas
+
+
+def disegna_reticolo(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                     colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
+                     dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
+    """Reticolo (moire): tre reticoli binari sovrapposti in XOR -- due
+    famiglie di cerchi concentrici con centri diversi e un reticolo di rette
+    -- le cui frange di interferenza (iperboli, raggi) sono il disegno.
+    Niente sfumature: ogni reticolo e' fatto di bande nette dentro/fuori,
+    come nei moire dei vecchi effetti da demo. Ogni reticolo appartiene a
+    una banda:
+      bassi -> frequenza dei cerchi A (quante bande per raggio)
+      alti  -> frequenza dei cerchi B, poco diversa da A: piu' gli alti
+               spingono, piu' le frange si infittiscono
+      medi  -> reticolo di rette C, rotazione e frequenza (assente se i
+               medi sono sotto soglia)
+    L'energia allontana i due centri (frange piu' larghe/strette), il BPM
+    li fa orbitare, l'attacco sposta la fase. Il colore e' sempre quello
+    PURO della banda dominante in quell'istante."""
+    _fattore, _k1, _k2, _kl, onset, intensita, velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    bassi = float(np.clip(feat["bassi"][i] * reattivita, 0.0, 1.0))
+    medi = float(np.clip(feat["medi"][i] * reattivita, 0.0, 1.0))
+    alti = float(np.clip(feat["alti"][i] * reattivita, 0.0, 1.0))
+    onset = float(np.clip(onset, 0.0, 1.0))
+    energia = float(np.clip((0.6 * feat["rms"][i] + 0.4 * feat["bassi"][i]) * reattivita, 0.0, 1.0))
+
+    h, w = canvas.shape[:2]
+    ris_w = max(260, int(np.sqrt(len(t1_arr)) * 14))
+    ris_h = max(146, int(ris_w * h / w))
+
+    if stato is None:
+        stato = {}
+    chiave = ("reticolo", ris_w, ris_h)
+    if stato.get("reticolo_chiave") != chiave:
+        asp = ris_w / ris_h
+        stato["reticolo_X"] = np.broadcast_to(np.linspace(-asp, asp, ris_w, dtype=np.float32)[None, :], (ris_h, ris_w)).copy()
+        stato["reticolo_Y"] = np.broadcast_to(np.linspace(-1.0, 1.0, ris_h, dtype=np.float32)[:, None], (ris_h, ris_w)).copy()
+        stato["reticolo_chiave"] = chiave
+    X, Y = stato["reticolo_X"], stato["reticolo_Y"]
+
+    angolo = t_frame * 0.008 * velocita + 1.2 * medi
+    d = 0.10 + 0.50 * energia
+    ca, sa = np.cos(angolo), np.sin(angolo)
+    fase = 0.5 * onset
+
+    fa = 6.0 + 14.0 * bassi
+    r1 = np.sqrt((X + d * ca) ** 2 + (Y + d * sa) ** 2)
+    campo = np.floor(r1 * fa + fase).astype(np.int32) & 1
+    # il secondo reticolo c'e' sempre (senza due reticoli non c'e' moire): la
+    # differenza di frequenza tra A e B, che fa le frange, cresce con gli alti
+    fb = fa * (1.025 + 0.12 * alti)
+    r2 = np.sqrt((X - d * ca) ** 2 + (Y - d * sa) ** 2)
+    campo ^= np.floor(r2 * fb - fase).astype(np.int32) & 1
+    if medi > 0.12:
+        fc = 3.0 + 9.0 * medi
+        proiez = X * np.cos(-angolo) + Y * np.sin(-angolo)
+        campo ^= np.floor(proiez * fc).astype(np.int32) & 1
+
+    bg_arr = np.array(colore_bg, dtype=np.float32)
+    col = np.array(_colore_miscelato(feat, i, colore_bassi, colore_medi, colore_alti), dtype=np.float32)
+    k = float(np.clip(intensita, 0.0, 1.0))
+    col = bg_arr + (col - bg_arr) * k
+    piccolo = np.where(campo[..., None] > 0, col, bg_arr).astype(np.float32)
+    grande = cv2.resize(piccolo, (w, h), interpolation=cv2.INTER_NEAREST)
+    canvas[:] = np.clip(grande, 0, 255).astype(np.uint8)
+    return canvas
+
+
+def disegna_corde(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                  colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
+                  dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
+    """Curva a corde (curve stitching): fili rettilinei tesi tra il punto
+    j-esimo di un asse e il punto (n-j)-esimo di un altro; l'inviluppo dei
+    fili e' una curva (una parabola, un'astroide) che nessun filo disegna
+    da solo. Geometria da libro di BASIC anni '80, ma qui senza archi o
+    curve: solo segmenti. Tre famiglie concentriche, una per banda, ognuna
+    ripetuta su 4 quadranti e nel proprio colore puro:
+      bassi -> famiglia esterna (assi lunghi)
+      medi  -> famiglia intermedia
+      alti  -> famiglia interna (assi corti)
+    L'energia di ogni banda decide quanti fili tende (piu' fili = inviluppo
+    piu' leggibile), la lunghezza degli assi e se la famiglia esiste (sotto
+    soglia sparisce); l'angolo tra i due assi oscilla con il BPM e si apre
+    sugli attacchi, cambiando la curva da astroide a parabola; le famiglie
+    ruotano in versi alterni."""
+    _fattore, _k1, _k2, _kl, onset, intensita, velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    valori = (
+        float(np.clip(feat["bassi"][i] * reattivita, 0.0, 1.0)),
+        float(np.clip(feat["medi"][i] * reattivita, 0.0, 1.0)),
+        float(np.clip(feat["alti"][i] * reattivita, 0.0, 1.0)),
+    )
+    onset = float(np.clip(onset, 0.0, 1.0))
+    h, w = canvas.shape[:2]
+    lato = min(w, h) * 0.54
+    scala_n = float(np.clip(np.sqrt(len(t1_arr) / 900.0), 0.5, 2.0))
+    bg_arr = np.array(colore_bg, dtype=np.float32)
+    k = float(np.clip(intensita, 0.0, 1.0))
+    spess = int(max(1, spessore - 1))
+
+    famiglie = ((colore_bassi, 1.00, 1.0), (colore_medi, 0.68, -1.0), (colore_alti, 0.40, 1.0))
+    for idx, ((col_banda, frac, verso), val) in enumerate(zip(famiglie, valori)):
+        if val < 0.08:
+            continue
+        L = lato * frac * (0.72 + 0.28 * val)
+        n = int((10 + 44 * val) * scala_n)
+        base = verso * t_frame * 0.006 * velocita * (1.0 + 0.4 * idx) + idx * 0.7
+        alfa = np.pi / 2 + 0.45 * np.sin(t_frame * 0.02 * velocita + idx) + 0.55 * onset
+        col = bg_arr + (np.array(col_banda, dtype=np.float32) - bg_arr) * k
+        colore = tuple(int(c) for c in np.clip(col, 0, 255))
+        js = np.arange(n + 1, dtype=np.float32) / n
+        for q in range(4):
+            a = base + q * np.pi / 2
+            b = a + alfa
+            ax, ay = np.cos(a), np.sin(a)
+            bx, by = np.cos(b), np.sin(b)
+            x1 = cx + ax * L * js
+            y1 = cy + ay * L * js
+            x2 = cx + bx * L * (1.0 - js)
+            y2 = cy + by * L * (1.0 - js)
+            for j in range(n + 1):
+                cv2.line(canvas, (int(x1[j]), int(y1[j])), (int(x2[j]), int(y2[j])),
+                         colore, spess, cv2.LINE_8)
+    return canvas
+
+
 MOTORI = {
     "Deriva (cartesiana)": {"funzione": disegna_ellisse, "n_step": 900, "fade": 0.90},
     "Fioritura (polare)": {"funzione": disegna_loto, "n_step": 3300, "fade": 0.80},
@@ -3051,6 +3311,10 @@ MOTORI = {
     "Radici (frattale di Newton)": {"funzione": disegna_radici, "n_step": 900, "fade": 0.0},
     "Flusso (flow field)": {"funzione": disegna_flusso, "n_step": 900, "fade": 0.75},
     "Muffa (Physarum)": {"funzione": disegna_muffa, "n_step": 900, "fade": 0.0},
+    "Maschera (bitwise rotozoom)": {"funzione": disegna_maschera, "n_step": 900, "fade": 0.0},
+    "Traccia (forma d'onda XY)": {"funzione": disegna_traccia, "n_step": 100, "fade": 0.55},
+    "Reticolo (moire)": {"funzione": disegna_reticolo, "n_step": 900, "fade": 0.0},
+    "Corde (curve a filo)": {"funzione": disegna_corde, "n_step": 900, "fade": 0.35},
 }
 
 
@@ -3414,7 +3678,7 @@ def main():
         # l'analisi DSP o il salvataggio del file ogni volta.
         # chiave sul CONTENUTO (non solo nome+dimensione: due brani diversi
         # con stesso nome e stessa dimensione non devono collidere)
-        chiave_file = f"{file_audio.name}:{hashlib.md5(file_audio.getbuffer()).hexdigest()}"
+        chiave_file = f"v3:{file_audio.name}:{hashlib.md5(file_audio.getbuffer()).hexdigest()}"
         if st.session_state.get("basicart_feat_key") != chiave_file:
             vecchio = st.session_state.get("basicart_audio_path")
             if vecchio and os.path.exists(vecchio):
