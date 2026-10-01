@@ -22,12 +22,16 @@ Loop507 protocol:
 
 import os
 import functools
+import hashlib
+import subprocess
+import zlib
 import tempfile
 import numpy as np
 import cv2
 import streamlit as st
 import librosa
-from moviepy import VideoFileClip, AudioFileClip
+from scipy.signal import lfilter
+import imageio_ffmpeg
 from PIL import Image, ImageDraw, ImageFont
 
 # ----------------------------------------------------------------------
@@ -42,7 +46,7 @@ RISOLUZIONI = {
     "1:1   (720x720)": (720, 720),
 }
 
-FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)", "Plasma (interferenza)", "Cometa (starfield prospettico)", "Magma (metaballs)", "Mosaico (celle di Voronoi)", "Galleria (tunnel prospettico)", "Braci (fuoco algoritmico)", "Vita (automa cellulare 2D)", "Morfogenesi (reazione-diffusione)", "Increspatura (onde d'impatto)", "Formica (automa di Langton)", "Pentola (sandpile)", "Circuito (Wireworld)", "Sorte (chaos game)", "Caos (biforcazione)", "Radici (frattale di Newton)", "Flusso (flow field)", "Muffa (Physarum)"]
+FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)", "Plasma (interferenza)", "Cometa (starfield prospettico)", "Magma (metaballs)", "Mosaico (celle di Voronoi)", "Galleria (tunnel prospettico)", "Braci (fuoco algoritmico)", "Vita (automa cellulare 2D)", "Morfogenesi (reazione-diffusione)", "Increspatura (onde d'impatto)", "Formica (automa di Langton)", "Circuito (Wireworld)", "Lama (3 linee)", "Radici (frattale di Newton)", "Flusso (flow field)", "Muffa (Physarum)"]
 
 # font veri (TTF) per "Iscrizione" — cartella "fonts/" accanto a questo script.
 # Se mancante, l'app ripiega automaticamente sui font Hershey di OpenCV
@@ -96,23 +100,57 @@ def _norm(arr):
 
 def _smussa(arr, alpha=0.12):
     """Media mobile esponenziale: evita salti bruschi frame-per-frame
-    che rendono il disegno caotico invece che fluido."""
-    out = np.empty_like(arr)
-    out[0] = arr[0]
-    for i in range(1, len(arr)):
-        out[i] = alpha * arr[i] + (1 - alpha) * out[i - 1]
+    che rendono il disegno caotico invece che fluido. Filtro IIR a un
+    polo (lfilter): stesso risultato del ciclo Python, molto piu' veloce."""
+    arr = np.asarray(arr, dtype=np.float64)
+    if len(arr) == 0:
+        return arr
+    zi = np.array([(1.0 - alpha) * arr[0]])
+    out, _ = lfilter([alpha], [1.0, -(1.0 - alpha)], arr, zi=zi)
     return out
 
 
-def _bande_spettrali(y, sr, hop_length, n_frames):
+def _n_fft_per(hop_length):
+    """Finestra STFT >= hop: con sample rate alti (es. 96 kHz) un hop piu'
+    grande di 2048 lascerebbe campioni mai analizzati."""
+    return int(2 ** np.ceil(np.log2(max(2048, hop_length))))
+
+
+def _bordi_bande(y, sr, f_min=40.0):
+    """Soglie bassi/medi/alti ADATTATE AL BRANO (prima fisse: 250 e 2000 Hz).
+    Si stima la banda realmente usata dal brano (dai 40 Hz fino alla
+    frequenza sotto cui cade il 97% dell'energia media spettrale, limitata
+    a 1.5-16 kHz) e la si divide in tre parti uguali in scala logaritmica.
+    Un brano scuro/lo-fi (poco sopra i 3 kHz) avra' soglie piu' basse, uno
+    brillante soglie piu' alte; su un brano "medio" i valori restano vicini
+    ai vecchi 250/2000 Hz. Stima veloce: STFT con salto grande."""
+    n_fft = 4096
+    S = np.abs(librosa.stft(y, n_fft=n_fft, hop_length=n_fft))
+    freqs = librosa.fft_frequencies(sr=sr, n_fft=n_fft)
+    sel = freqs >= f_min
+    media = S.mean(axis=1)[sel]
+    f_sel = freqs[sel]
+    if media.size == 0 or media.sum() <= 1e-12:
+        return 250.0, 2000.0, 8000.0
+    cum = np.cumsum(media)
+    cum = cum / cum[-1]
+    f_alto = float(f_sel[min(int(np.searchsorted(cum, 0.97)), len(f_sel) - 1)])
+    f_alto = float(np.clip(f_alto, 1500.0, min(16000.0, sr / 2.0 * 0.95)))
+    r = (f_alto / f_min) ** (1.0 / 3.0)
+    return f_min * r, f_min * r * r, f_alto
+
+
+def _bande_spettrali(y, sr, hop_length, n_frames, bordi):
     """Energia in 3 bande di frequenza (bassi/medi/alti) via STFT.
     Analisi DSP pura, nessun modello AI."""
-    S = np.abs(librosa.stft(y, hop_length=hop_length))
-    freqs = librosa.fft_frequencies(sr=sr, n_fft=(S.shape[0] - 1) * 2)
+    n_fft = _n_fft_per(hop_length)
+    S = np.abs(librosa.stft(y, n_fft=n_fft, hop_length=hop_length))
+    freqs = librosa.fft_frequencies(sr=sr, n_fft=n_fft)
 
-    m_bassi = freqs < 250
-    m_medi = (freqs >= 250) & (freqs < 2000)
-    m_alti = freqs >= 2000
+    f1, f2 = bordi[0], bordi[1]
+    m_bassi = freqs < f1
+    m_medi = (freqs >= f1) & (freqs < f2)
+    m_alti = freqs >= f2
 
     def energia(mask):
         return S[mask].mean(axis=0) if mask.any() else np.zeros(S.shape[1])
@@ -130,25 +168,38 @@ def _bande_spettrali(y, sr, hop_length, n_frames):
     # brano cupo) risulta "alla pari" delle altre nel calcolo dei pesi, e il
     # colore miscelato resta quasi costante per tutto il brano invece di
     # spostarsi visibilmente verso bassi/medi/alti quando quella banda prevale
-    tot_raw = bassi_raw + medi_raw + alti_raw + 1e-9
-    quota_bassi = bassi_raw / tot_raw
-    quota_medi = medi_raw / tot_raw
-    quota_alti = alti_raw / tot_raw
+    #
+    # CORREZIONE (inclinazione spettrale): la musica reale ha molta piu'
+    # energia nei bassi che negli alti, quindi con l'energia grezza i bassi
+    # vincevano quasi sempre (misurato su un segnale di prova: ~98% dei
+    # frame) e gli altri due colori non comparivano mai. Ogni banda viene
+    # quindi divisa per il proprio livello MEDIO sull'intero brano: vince
+    # la banda che in quell'istante e' piu' sopra alla propria norma.
+    # Non e' la vecchia normalizzazione sul massimo (che stirava ogni
+    # banda su 0..1): qui la media e' un riferimento, non un estremo.
+    rel_bassi = bassi_raw / (bassi_raw.mean() + 1e-9)
+    rel_medi = medi_raw / (medi_raw.mean() + 1e-9)
+    rel_alti = alti_raw / (alti_raw.mean() + 1e-9)
+    tot_raw = rel_bassi + rel_medi + rel_alti + 1e-9
+    quota_bassi = rel_bassi / tot_raw
+    quota_medi = rel_medi / tot_raw
+    quota_alti = rel_alti / tot_raw
 
     return (_norm(bassi_raw), _norm(medi_raw), _norm(alti_raw),
             quota_bassi, quota_medi, quota_alti)
 
 
-def _spettro_a_barre(y, sr, hop_length, n_frames, n_barre=140):
+def _spettro_a_barre(y, sr, hop_length, n_frames, bordi, n_barre=140):
     """Spettro a barre nel tempo: n_barre bande di frequenza log-spaziate
     (come un vero equalizzatore, piu' risoluzione sui bassi), energia
     normalizzata banda per banda sul proprio massimo nel brano. Usato per
     un display "spectrum analyzer" con barre ferme che pulsano in altezza,
     non per uno storico che scorre. Restituisce anche la classificazione
-    di ogni barra (0=bassi <250Hz, 1=medi 250-2000Hz, 2=alti >=2000Hz) in
+    di ogni barra (0=bassi, 1=medi, 2=alti: soglie adattate al brano, vedi _bordi_bande) in
     base alla sua frequenza centrale, per poterla colorare di conseguenza."""
-    S = np.abs(librosa.stft(y, hop_length=hop_length))
-    freqs = librosa.fft_frequencies(sr=sr, n_fft=(S.shape[0] - 1) * 2)
+    n_fft = _n_fft_per(hop_length)
+    S = np.abs(librosa.stft(y, n_fft=n_fft, hop_length=hop_length))
+    freqs = librosa.fft_frequencies(sr=sr, n_fft=n_fft)
 
     f_min, f_max = 40.0, min(sr / 2.0, 12000.0)
     bordi = np.geomspace(f_min, f_max, n_barre + 1)
@@ -165,9 +216,9 @@ def _spettro_a_barre(y, sr, hop_length, n_frames, n_barre=140):
         spettro[:, b] = _smussa(_norm(_adatta(colonna, n_frames)), alpha=0.30)
 
         centro = np.sqrt(bordi[b] * bordi[b + 1])
-        if centro < 250:
+        if centro < bordi[0]:
             classe_banda[b] = 0
-        elif centro < 2000:
+        elif centro < bordi[1]:
             classe_banda[b] = 1
         else:
             classe_banda[b] = 2
@@ -183,7 +234,7 @@ def _colore_miscelato(feat, i, colore_bassi, colore_medi, colore_alti):
     discreta (Sismografo, Magma, ...). Usato dalle forme che non hanno
     gia' una struttura a bande propria (Deriva, Fioritura, Pulviscolo,
     Graffio, Frontiera, Sinapsi, Labirinto, Risonanza, Poliedro, Epicicli,
-    Iscrizione, Plasma, Formica, Galleria, Sorte, Caos). Le "quote"
+    Iscrizione, Plasma, Formica, Galleria, Lama). Le "quote"
     (feat['quota_*'], energia grezza non normalizzata banda per banda)
     sono gia' smussate nel tempo (vedi _smussa), quindi il cambio di
     colore resta comunque morbido invece che a scatti bruschi frame per
@@ -227,8 +278,9 @@ def analizza_audio(path_audio, fps, durata_max=MAX_DURATION_S):
 
     hop_length = max(1, int(sr / fps))
 
-    rms = librosa.feature.rms(y=y, hop_length=hop_length)[0]
-    centroid = librosa.feature.spectral_centroid(y=y, sr=sr, hop_length=hop_length)[0]
+    n_fft = _n_fft_per(hop_length)
+    rms = librosa.feature.rms(y=y, frame_length=n_fft, hop_length=hop_length)[0]
+    centroid = librosa.feature.spectral_centroid(y=y, sr=sr, n_fft=n_fft, hop_length=hop_length)[0]
     onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop_length)
 
     rms_grezzo = _adatta(rms, n_frames)   # RMS non normalizzato: serve per rilevare il
@@ -238,8 +290,9 @@ def analizza_audio(path_audio, fps, durata_max=MAX_DURATION_S):
     centroid = _norm(_adatta(centroid, n_frames))
     onset_env = _norm(_adatta(onset_env, n_frames))
 
-    bassi, medi, alti, quota_bassi, quota_medi, quota_alti = _bande_spettrali(y, sr, hop_length, n_frames)
-    spettro, spettro_classe = _spettro_a_barre(y, sr, hop_length, n_frames)
+    bordi = _bordi_bande(y, sr)
+    bassi, medi, alti, quota_bassi, quota_medi, quota_alti = _bande_spettrali(y, sr, hop_length, n_frames, bordi)
+    spettro, spettro_classe = _spettro_a_barre(y, sr, hop_length, n_frames, bordi)
     bpm, battiti_video = _stima_bpm_e_battiti(y, sr, hop_length, fps, n_frames)
 
     # gate di presenza: 0 nel silenzio vero, 1 appena il volume supera una soglia
@@ -267,6 +320,7 @@ def analizza_audio(path_audio, fps, durata_max=MAX_DURATION_S):
         "quota_alti": _smussa(quota_alti),
         "spettro": spettro,
         "spettro_classe": spettro_classe,
+        "bordi_bande": bordi,
         "presenza": presenza,
         "bpm": bpm,
         "battiti_video": battiti_video,
@@ -727,7 +781,7 @@ def _punti_campione_lettera_pil(font_pil, carattere, n_punti):
     ImageDraw.Draw(img).text((-lb + 2, -tb + 2), carattere, font=font_pil, fill=255)
     arr = np.array(img)
     ys, xs = np.where(arr > 80)
-    rng_locale = np.random.default_rng(hash(carattere) % (2**31))
+    rng_locale = np.random.default_rng(zlib.crc32(carattere.encode("utf-8")))
     if len(xs) == 0:
         return np.zeros((n_punti, 2)), (-lb + 2, -tb + 2)
     if len(xs) >= n_punti:
@@ -2517,104 +2571,6 @@ def disegna_formica(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore
     return canvas
 
 
-def disegna_pentola(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
-                     colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
-                     dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
-    """Pentola: il modello del mucchio di sabbia (Bak-Tang-Wiesenfeld, 1987)
-    — criticita' auto-organizzata. Si versano granelli su una griglia;
-    quando una cella supera una soglia "frana", distribuendo un granello a
-    ciascun vicino, che a sua volta puo' franare — valanghe a catena di
-    dimensione imprevedibile, dalla piu' piccola alla piu' estesa. Diverso
-    da tutto il resto del catalogo, e NON e' aggregazione/crescita come
-    Fulmine (scartato in precedenza): qui la sabbia si ridistribuisce, non
-    si attacca — i granelli ai bordi cadono fuori dalla griglia e si
-    perdono, come nell'esperimento fisico originale. La vicinanza usata per
-    franare alterna il classico 4-vicini (soglia 4) e la variante 8-vicini
-    (soglia 8, entrambe note in letteratura) in base agli alti. Un flusso
-    costante di granelli cade al centro (l'esperimento classico) con
-    intensita' legata ai bassi; ogni attacco forte fa cadere una manciata
-    extra in un punto casuale, innescando una nuova valanga. Il numero di
-    passi di rilassamento per frame segue il BPM: le valanghe grandi si
-    propagano su piu' fotogrammi invece di risolversi tutte in uno solo."""
-    fattore, _k1, _k2, _k_loto, onset, intensita, velocita = _parametri_da_audio(
-        feat, i, t_frame, fps, reattivita
-    )
-    bassi = feat["bassi"][i] * reattivita
-    alti = feat["alti"][i] * reattivita
-    presenza = feat["presenza"][i]
-
-    h, w = canvas.shape[:2]
-    ris_w = max(60, int(np.sqrt(len(t1_arr)) * 4))
-    ris_h = max(34, int(ris_w * h / w))
-
-    if stato is None:
-        stato = {}
-    if "pen_grid" not in stato or stato["pen_grid"].shape != (ris_h, ris_w):
-        stato["pen_grid"] = np.zeros((ris_h, ris_w), dtype=np.int32)
-        stato["pen_rng"] = np.random.default_rng(507)
-        stato["pen_onset_prev"] = 0.0
-
-    grid = stato["pen_grid"]
-    rng = stato["pen_rng"]
-    onset_prev = stato["pen_onset_prev"]
-
-    usa_moore = alti > 0.5
-    soglia = 8 if usa_moore else 4
-    offsets = [(-1, 0), (1, 0), (0, -1), (0, 1)]
-    if usa_moore:
-        offsets += [(-1, -1), (-1, 1), (1, -1), (1, 1)]
-
-    # flusso costante al centro (l'esperimento classico del mucchio di
-    # sabbia), intensita' legata ai bassi, azzerato nel silenzio
-    n_continuo = int(round(1 + 3 * np.clip(bassi, 0.0, 1.4))) if presenza > 0.1 else 0
-    if n_continuo:
-        grid[ris_h // 2, ris_w // 2] += n_continuo
-
-    # fronte di salita dell'onset: una manciata extra in un punto casuale,
-    # come un nuovo colpo che innesca una nuova valanga
-    scatta = (onset > 0.5) and (onset_prev <= 0.5)
-    stato["pen_onset_prev"] = float(onset)
-    if scatta:
-        py = int(rng.integers(ris_h // 6, ris_h - ris_h // 6))
-        px = int(rng.integers(ris_w // 6, ris_w - ris_w // 6))
-        grid[py, px] += int(round(15 + 15 * np.clip(fattore, 0.0, 1.5)))
-
-    # passi di rilassamento per frame: le valanghe grandi si propagano su
-    # piu' fotogrammi invece di risolversi tutte in un frame
-    max_passi = max(4, int(round(6 + 24 * velocita)))
-    for _ in range(max_passi):
-        n_topple = grid // soglia
-        if not n_topple.any():
-            break
-        resto = grid % soglia
-        pad = np.pad(n_topple, 1)
-        ricevuto = np.zeros_like(grid)
-        for dy, dx in offsets:
-            ricevuto += pad[1 + dy:1 + dy + ris_h, 1 + dx:1 + dx + ris_w]
-        grid = resto + ricevuto
-
-    stato["pen_grid"] = grid
-
-    # colore: gradiente a 3 tappe attraverso i colori di banda in base
-    # all'altezza della pila in quella cella, stesso stile di Braci
-    t_norm = np.clip(grid.astype(np.float32) / soglia, 0.0, 1.0)
-    bg_arr = np.array(colore_bg, dtype=np.float32)
-    cb = np.array(colore_bassi, dtype=np.float32)
-    cm = np.array(colore_medi, dtype=np.float32)
-    ca = np.array(colore_alti, dtype=np.float32)
-    seg = t_norm * 3.0
-    f0 = np.clip(seg, 0.0, 1.0)[..., None]
-    f1 = np.clip(seg - 1.0, 0.0, 1.0)[..., None]
-    f2 = np.clip(seg - 2.0, 0.0, 1.0)[..., None]
-    colore_arr = bg_arr + (cb - bg_arr) * f0 + (cm - cb) * f1 + (ca - cm) * f2
-
-    finale = bg_arr + (colore_arr - bg_arr) * intensita
-    campo_grande = cv2.resize(finale.astype(np.float32), (w, h), interpolation=cv2.INTER_NEAREST)
-    canvas[:] = np.clip(campo_grande, 0, 255).astype(np.uint8)
-
-    return canvas
-
-
 def disegna_circuito(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
                       colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
                       dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
@@ -2676,7 +2632,7 @@ def disegna_circuito(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, color
                 grid[wire_y[idx], wire_x[idx]] = 2
 
     # fronte di salita dell'onset: un nuovo elettrone, come in
-    # Increspatura/Pentola
+    # Increspatura
     onset_prev = stato["cir_onset_prev"]
     scatta = (onset > 0.5) and (onset_prev <= 0.5)
     stato["cir_onset_prev"] = float(onset)
@@ -2729,182 +2685,40 @@ def disegna_circuito(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, color
     return canvas
 
 
-def disegna_sorte(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
-                   colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
-                   dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
-    """Sorte: il chaos game (Michael Barnsley, 1988) — un solo punto che
-    vaga: ad ogni passo salta a meta' strada verso uno dei vertici di un
-    poligono, scelto a caso. Da migliaia di salti puramente casuali emerge,
-    sempre, un frattale preciso (tipicamente una variante del triangolo di
-    Sierpinski) — e' il gemello statistico di Graffio (stesso "punto che
-    vaga"), ma qui il caos converge sempre alla stessa forma invece di
-    vagare senza meta. Il numero di vertici e' fissato all'inizio del
-    render (da bassi+alti del primo istante); i vertici sono divisi in tre
-    gruppi bassi/medi/alti e la PROBABILITA' di saltare verso ciascun
-    gruppo segue la reale dominanza di banda istante per istante (le
-    "quote" usate anche per il mix colore), cosi' il frattale "pende"
-    visibilmente verso il lato della banda che domina in quel momento.
-    Densita' di visita accumulata con lieve decadimento (stato persistente),
-    non ridisegnata da zero ogni frame."""
-    fattore, _k1, _k2, _k_loto, _onset, intensita, velocita = _parametri_da_audio(
+def disegna_lama(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                 colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
+                 dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
+    """Lama: tre linee verticali, una per banda (bassi / medi / alti),
+    ciascuna nel proprio colore. Ogni linea scorre da sinistra a destra
+    seguendo SOLO l'energia della sua banda: una linea ferma a sinistra =
+    banda quasi muta, a destra = banda al massimo. Lo spessore di ogni
+    linea cresce con la propria banda; la luminosita' di tutte segue il
+    gate di presenza (nel silenzio vero spariscono). Erano il cursore di
+    "Caos (biforcazione)", ridotto a sola linea e poi triplicato."""
+    _fattore, _k1, _k2, _k_loto, _onset, intensita, _velocita = _parametri_da_audio(
         feat, i, t_frame, fps, reattivita
     )
-    _ = fattore
-    presenza = feat["presenza"][i]
-
     h, w = canvas.shape[:2]
-    ris_w = max(80, int(np.sqrt(len(t1_arr)) * 5))
-    ris_h = max(45, int(ris_w * h / w))
-
-    if stato is None:
-        stato = {}
-    if "sor_densita" not in stato or stato["sor_densita"].shape != (ris_h, ris_w):
-        rng = np.random.default_rng(507)
-        bassi0 = float(feat["bassi"][0])
-        alti0 = float(feat["alti"][0])
-        n_vertici = int(np.clip(3 + round(3 * (bassi0 + alti0) / 2.0), 3, 6))
-        angoli = np.linspace(0, 2 * np.pi, n_vertici, endpoint=False) + np.pi / 2
-        raggio_poligono = min(raggio_x, raggio_y) * 0.92
-        vert_x = cx + raggio_poligono * np.cos(angoli)
-        vert_y = cy + raggio_poligono * np.sin(angoli)
-        stato["sor_vertici"] = np.stack([vert_x, vert_y], axis=1)
-        stato["sor_gruppo"] = np.arange(n_vertici) % 3
-        stato["sor_punto"] = np.array([float(cx), float(cy)])
-        stato["sor_densita"] = np.zeros((ris_h, ris_w), dtype=np.float32)
-        stato["sor_rng"] = rng
-
-    vertici = stato["sor_vertici"]
-    gruppo_v = stato["sor_gruppo"]
-    punto = stato["sor_punto"]
-    densita = stato["sor_densita"]
-    rng = stato["sor_rng"]
-    n_vertici = len(vertici)
-
-    # probabilita' di saltare verso ciascun gruppo = reale dominanza di
-    # banda in questo istante (le stesse "quote" di _colore_miscelato)
-    quota = np.array([feat["quota_bassi"][i], feat["quota_medi"][i], feat["quota_alti"][i]])
-    conteggio_gruppo = np.array([np.sum(gruppo_v == g) for g in range(3)])
-    pesi = quota[gruppo_v] / conteggio_gruppo[gruppo_v]
-    pesi = pesi / pesi.sum()
-
-    passi = int(np.clip(80 + 300 * velocita * reattivita, 40, 600) * max(presenza, 0.1))
-    scelte = rng.choice(n_vertici, size=passi, p=pesi)
-
-    scala_x = ris_w / w
-    scala_y = ris_h / h
-    vert_x_arr = vertici[:, 0]
-    vert_y_arr = vertici[:, 1]
-    px, py = float(punto[0]), float(punto[1])
-
-    densita *= 0.992
-    for idx in scelte:
-        px += 0.5 * (vert_x_arr[idx] - px)
-        py += 0.5 * (vert_y_arr[idx] - py)
-        gx = int(px * scala_x)
-        gy = int(py * scala_y)
-        if 0 <= gy < ris_h and 0 <= gx < ris_w:
-            densita[gy, gx] += 1.0
-
-    stato["sor_punto"] = np.array([px, py])
-    stato["sor_densita"] = densita
-
-    colore_base = np.array(_colore_miscelato(feat, i, colore_bassi, colore_medi, colore_alti), dtype=np.float32)
+    margine = 0.04 * w
+    canvas[:] = np.array(colore_bg, dtype=np.uint8)
     bg_arr = np.array(colore_bg, dtype=np.float32)
-    t_norm = np.clip(np.sqrt(densita) / 4.0, 0.0, 1.0)   # sqrt: le zone piu' visitate non saturano troppo in fretta
-    colore_piccolo = bg_arr + (colore_base - bg_arr) * t_norm[..., None]
-    finale = bg_arr + (colore_piccolo - bg_arr) * intensita
-    campo_grande = cv2.resize(finale.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)
-    canvas[:] = np.clip(campo_grande, 0, 255).astype(np.uint8)
+    k = float(np.clip(intensita, 0.0, 1.0))
 
-    return canvas
-
-
-def disegna_caos(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
-                  colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
-                  dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
-    """Caos: il diagramma di biforcazione della mappa logistica
-    (x_(n+1)=r*x_n*(1-x_n), teoria del caos, Mitchell Feigenbaum anni '70)
-    — il disegno piu' famoso della teoria del caos: per r piccolo il
-    sistema si stabilizza su un valore, poi si biforca in due, poi
-    quattro, poi diventa caos puro. Ogni colonna del canvas e' un valore
-    di r fisso (asse orizzontale), ogni riga un valore di stato (asse
-    verticale); migliaia di iterazioni si accumulano colonna per colonna
-    nel tempo (stato persistente, senza decadimento) rivelando
-    gradualmente l'albero frattale. Il parametro r del "cursore" — una
-    riga verticale luminosa sovrapposta, non accumulata — segue live
-    l'energia del brano: passaggi calmi = cursore sui valori stabili
-    (sinistra), passaggi intensi = cursore nella zona caotica (destra),
-    dove sfarfalla. Meccanismo radicalmente diverso da tutto il resto del
-    catalogo: sistemi dinamici, non geometria/automi/campi."""
-    fattore, _k1, _k2, _k_loto, _onset, intensita, velocita = _parametri_da_audio(
-        feat, i, t_frame, fps, reattivita
+    # ordine di disegno: alti sotto, bassi sopra (i bassi sono la linea
+    # "pesante": se due linee si incontrano resta visibile la piu' grave)
+    bande = (
+        (feat["alti"][i], colore_alti),
+        (feat["medi"][i], colore_medi),
+        (feat["bassi"][i], colore_bassi),
     )
-    _ = fattore
-    presenza = feat["presenza"][i]
-
-    h, w = canvas.shape[:2]
-    ris_w = max(90, int(np.sqrt(len(t1_arr)) * 6))
-    ris_h = max(50, int(ris_w * h / w))
-    r_min, r_max = 2.4, 4.0
-
-    if stato is None:
-        stato = {}
-    if "cha_densita" not in stato or stato["cha_densita"].shape != (ris_h, ris_w):
-        rng = np.random.default_rng(507)
-        r_arr = np.linspace(r_min, r_max, ris_w)
-        x_arr = rng.uniform(0.05, 0.95, ris_w)
-        # transitorio iniziale: scarta le prime iterazioni prima di
-        # cominciare a disegnare, come nel diagramma classico (altrimenti
-        # le prime righe mostrerebbero solo il punto di partenza casuale,
-        # non il comportamento a lungo termine)
-        for _ in range(200):
-            x_arr = r_arr * x_arr * (1.0 - x_arr)
-        stato["cha_r"] = r_arr
-        stato["cha_x"] = x_arr
-        stato["cha_densita"] = np.zeros((ris_h, ris_w), dtype=np.float32)
-
-    r_arr = stato["cha_r"]
-    x_arr = stato["cha_x"]
-    densita = stato["cha_densita"]
-    colonne = np.arange(ris_w)
-
-    # energia complessiva pilota il "cursore": passaggi calmi verso la
-    # zona stabile (sinistra), passaggi intensi verso il caos (destra)
-    energia = np.clip(feat["rms"][i] * 0.6 + feat["bassi"][i] * 0.4, 0.0, 1.0) * reattivita
-    energia = float(np.clip(energia, 0.0, 1.0))
-    r_cursore = r_min + (r_max - r_min) * energia
-    col_cursore = int((r_cursore - r_min) / (r_max - r_min) * (ris_w - 1))
-
-    passi = max(4, int(round((10 + 90 * velocita) * max(presenza, 0.1))))
-    # nella colonna del cursore si accumula qualche punto in piu': la zona
-    # su cui la musica si sta "posando" in questo istante si illumina un
-    # po' piu' in fretta delle altre, oltre a mostrare la riga sovrapposta
-    peso_extra = np.ones(ris_w, dtype=np.float32)
-    largo = max(1, ris_w // 40)
-    peso_extra[max(0, col_cursore - largo):col_cursore + largo] = 2.5
-
-    for _ in range(passi):
-        x_arr = r_arr * x_arr * (1.0 - x_arr)
-        righe = np.clip((x_arr * ris_h).astype(np.int32), 0, ris_h - 1)
-        densita[righe, colonne] += peso_extra
-
-    stato["cha_x"] = x_arr
-    stato["cha_densita"] = densita
-
-    colore_base = np.array(_colore_miscelato(feat, i, colore_bassi, colore_medi, colore_alti), dtype=np.float32)
-    bg_arr = np.array(colore_bg, dtype=np.float32)
-    t_norm = np.clip(np.log1p(densita) / np.log1p(200.0), 0.0, 1.0)
-    colore_piccolo = bg_arr + (colore_base - bg_arr) * t_norm[..., None]
-
-    # cursore: riga verticale luminosa nel colore degli alti, sovrapposta
-    # (non accumulata in densita', quindi sparisce quando il cursore si
-    # sposta altrove)
-    colore_piccolo[:, max(0, col_cursore - 1):col_cursore + 2] = np.array(colore_alti, dtype=np.float32)
-
-    finale = bg_arr + (colore_piccolo - bg_arr) * intensita
-    campo_grande = cv2.resize(finale.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)
-    canvas[:] = np.clip(campo_grande, 0, 255).astype(np.uint8)
-
+    for valore, colore_linea in bande:
+        e = float(np.clip(valore * reattivita, 0.0, 1.0))
+        x_lama = margine + (w - 2 * margine) * e
+        mezzo = max(1, int(round(spessore + 3.0 * e)))
+        x0 = int(max(0, x_lama - mezzo))
+        x1 = int(min(w, x_lama + mezzo + 1))
+        col = bg_arr + (np.array(colore_linea, dtype=np.float32) - bg_arr) * k
+        canvas[:, x0:x1] = np.clip(col, 0, 255).astype(np.uint8)
     return canvas
 
 
@@ -3232,17 +3046,36 @@ MOTORI = {
     "Morfogenesi (reazione-diffusione)": {"funzione": disegna_morfogenesi, "n_step": 900, "fade": 0.0},
     "Increspatura (onde d'impatto)": {"funzione": disegna_increspatura, "n_step": 400, "fade": 0.25},
     "Formica (automa di Langton)": {"funzione": disegna_formica, "n_step": 900, "fade": 0.0},
-    "Pentola (sandpile)": {"funzione": disegna_pentola, "n_step": 900, "fade": 0.0},
     "Circuito (Wireworld)": {"funzione": disegna_circuito, "n_step": 900, "fade": 0.0},
-    "Sorte (chaos game)": {"funzione": disegna_sorte, "n_step": 900, "fade": 0.0},
-    "Caos (biforcazione)": {"funzione": disegna_caos, "n_step": 900, "fade": 0.0},
+    "Lama (3 linee)": {"funzione": disegna_lama, "n_step": 900, "fade": 0.0},
     "Radici (frattale di Newton)": {"funzione": disegna_radici, "n_step": 900, "fade": 0.0},
     "Flusso (flow field)": {"funzione": disegna_flusso, "n_step": 900, "fade": 0.75},
     "Muffa (Physarum)": {"funzione": disegna_muffa, "n_step": 900, "fade": 0.0},
 }
 
 
-def genera_video(feat, path_out, width, height, colore_bg, colore_bassi, colore_medi, colore_alti,
+def _apri_ffmpeg(path_out, path_audio, width, height, fps, durata):
+    """Avvia ffmpeg con i frame grezzi BGR da stdin: UNA sola codifica
+    H.264 con l'audio gia' dentro (prima: mp4v di OpenCV + ricodifica
+    libx264 di MoviePy = doppia perdita di qualita' e doppio tempo).
+    Il log di ffmpeg va su file, non su pipe, per evitare blocchi."""
+    log = tempfile.NamedTemporaryFile(delete=False, suffix=".log")
+    cmd = [
+        imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-loglevel", "error",
+        "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{width}x{height}",
+        "-r", str(fps), "-i", "-",
+        "-i", path_audio,
+        "-map", "0:v:0", "-map", "1:a:0",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "192k",
+        "-t", f"{durata:.3f}", "-movflags", "+faststart",
+        path_out,
+    ]
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=log)
+    return proc, log.name
+
+
+def genera_video(feat, path_out, path_audio, width, height, colore_bg, colore_bassi, colore_medi, colore_alti,
                   forma, fps=FPS, seed=507, densita=1.0, spessore=2, reattivita=1.0, frase="",
                   dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False):
     np.random.seed(seed)
@@ -3258,8 +3091,7 @@ def genera_video(feat, path_out, width, height, colore_bg, colore_bassi, colore_
     fade_alpha = motore["fade"]
     t1_arr = np.arange(n_step, dtype=np.float64)   # indice pre-calcolato una sola volta
 
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(path_out, fourcc, fps, (width, height))
+    proc, path_log = _apri_ffmpeg(path_out, path_audio, width, height, fps, feat["durata"])
 
     canvas = np.zeros((height, width, 3), dtype=np.float32)
     bg = np.array(colore_bg, dtype=np.float32)
@@ -3288,13 +3120,31 @@ def genera_video(feat, path_out, width, height, colore_bg, colore_bassi, colore_
         )
         canvas = canvas_u8.astype(np.float32)
 
-        writer.write(canvas_u8)
+        try:
+            proc.stdin.write(np.ascontiguousarray(canvas_u8).tobytes())
+        except (BrokenPipeError, OSError):
+            break   # ffmpeg e' terminato: l'errore viene riportato sotto
 
         if i % 5 == 0 or i == n_frames - 1:
             progress.progress((i + 1) / n_frames, text=f"RENDER :: frame {i+1}/{n_frames}")
 
-    writer.release()
+    try:
+        proc.stdin.close()
+    except OSError:
+        pass
+    codice = proc.wait()
     progress.empty()
+    if codice != 0:
+        try:
+            with open(path_log, "r", errors="replace") as f:
+                coda = f.read()[-600:]
+        except OSError:
+            coda = ""
+        raise RuntimeError(f"ffmpeg ha fallito (codice {codice}) :: {coda}")
+    try:
+        os.remove(path_log)
+    except OSError:
+        pass
 
 
 def genera_anteprima(feat, width, height, colore_bg, colore_bassi, colore_medi, colore_alti, forma,
@@ -3349,17 +3199,18 @@ def genera_anteprima(feat, width, height, colore_bg, colore_bassi, colore_medi, 
     return canvas.astype(np.uint8), i_picco
 
 
-def mux_audio(path_video_muto, path_audio, path_out, durata):
-    video_clip = VideoFileClip(path_video_muto)
-    audio_clip = AudioFileClip(path_audio).subclipped(0, durata)
-    final = video_clip.with_audio(audio_clip)
-    final.write_videofile(
-        path_out, codec="libx264", audio_codec="aac",
-        fps=FPS, logger=None
+@st.cache_data(show_spinner=False, max_entries=24)
+def anteprima_cache(chiave_audio, _feat, width, height, colore_bg, colore_bassi, colore_medi,
+                    colore_alti, forma, densita, spessore, reattivita, frase, dimensione_testo,
+                    font_scelto, lettere_extra, sovrapponi):
+    """Anteprima memorizzata per combinazione di parametri: ripremere lo
+    stesso slider o tornare a una forma gia' vista non rifa' la simulazione
+    (~4 s di frame). _feat e' escluso dall'hash: lo identifica chiave_audio."""
+    return genera_anteprima(
+        _feat, width, height, colore_bg, colore_bassi, colore_medi, colore_alti, forma,
+        densita, spessore, reattivita, frase=frase, dimensione_testo=dimensione_testo,
+        font_scelto=font_scelto, lettere_extra=lettere_extra, sovrapponi=sovrapponi,
     )
-    video_clip.close()
-    audio_clip.close()
-    final.close()
 
 
 def genera_report(nome_file, forma, width, height, risoluzione_label, feat,
@@ -3561,8 +3412,16 @@ def main():
         # (non nella TemporaryDirectory del bottone, che si cancella subito)
         # cosi' l'anteprima puo' rigenerarsi ad ogni slider senza rifare
         # l'analisi DSP o il salvataggio del file ogni volta.
-        chiave_file = f"{file_audio.name}:{file_audio.size}"
+        # chiave sul CONTENUTO (non solo nome+dimensione: due brani diversi
+        # con stesso nome e stessa dimensione non devono collidere)
+        chiave_file = f"{file_audio.name}:{hashlib.md5(file_audio.getbuffer()).hexdigest()}"
         if st.session_state.get("basicart_feat_key") != chiave_file:
+            vecchio = st.session_state.get("basicart_audio_path")
+            if vecchio and os.path.exists(vecchio):
+                try:
+                    os.remove(vecchio)   # niente accumulo di file temporanei
+                except OSError:
+                    pass
             path_persistente = tempfile.NamedTemporaryFile(
                 delete=False, suffix=os.path.splitext(file_audio.name)[1]
             ).name
@@ -3582,22 +3441,27 @@ def main():
             f"SR :: {feat['sr']} Hz  |  "
             f"BPM stimato :: {feat['bpm']:.0f}"
         )
+        _b = feat["bordi_bande"]
+        st.caption(
+            f"Bande adattate al brano :: bassi < {_b[0]:.0f} Hz  |  "
+            f"medi {_b[0]:.0f}-{_b[1]:.0f} Hz  |  alti > {_b[1]:.0f} Hz"
+        )
 
         # anteprima live al picco energetico del brano: si rigenera automaticamente
         # ad ogni modifica di forma/colori/slider, senza rifare l'analisi DSP
         with st.spinner("Aggiornamento anteprima :: Updating preview..."):
-            anteprima_bgr, i_picco = genera_anteprima(
-                feat, width, height, colore_bg, colore_bassi, colore_medi, colore_alti, forma,
-                densita, spessore, reattivita, frase=frase,
-                dimensione_testo=dimensione_testo, font_scelto=font_scelto, lettere_extra=lettere_extra, sovrapponi=sovrapponi,
+            anteprima_bgr, i_picco = anteprima_cache(
+                chiave_file, feat, width, height, colore_bg, colore_bassi, colore_medi, colore_alti,
+                forma, densita, spessore, reattivita, frase, dimensione_testo, font_scelto,
+                lettere_extra, sovrapponi,
             )
         anteprima_rgb = cv2.cvtColor(anteprima_bgr, cv2.COLOR_BGR2RGB)
-        st.image(
-            anteprima_rgb,
-            caption=f"Anteprima al picco audio ({i_picco / FPS:.1f}s) :: "
-                    f"Preview at audio peak ({i_picco / FPS:.1f}s)",
-            use_container_width=True,
-        )
+        didascalia = (f"Anteprima al picco audio ({i_picco / FPS:.1f}s) :: "
+                      f"Preview at audio peak ({i_picco / FPS:.1f}s)")
+        try:
+            st.image(anteprima_rgb, caption=didascalia, width="stretch")
+        except Exception:   # Streamlit piu' vecchio: parametro storico
+            st.image(anteprima_rgb, caption=didascalia, use_container_width=True)
 
         n_step_stimato = MOTORI[forma]["n_step"] * densita
         fattore_forma = n_step_stimato / 900
@@ -3609,17 +3473,13 @@ def main():
         if st.button("Genera video :: Generate video", type="primary"):
             path_in = st.session_state["basicart_audio_path"]
             with tempfile.TemporaryDirectory() as tmp:
-                path_video_muto = os.path.join(tmp, "video_muto.mp4")
+                path_finale = os.path.join(tmp, "basicart_output.mp4")
                 genera_video(
-                    feat, path_video_muto, width, height, colore_bg,
+                    feat, path_finale, path_in, width, height, colore_bg,
                     colore_bassi, colore_medi, colore_alti, forma,
                     densita=densita, spessore=spessore, reattivita=reattivita, frase=frase,
                     dimensione_testo=dimensione_testo, font_scelto=font_scelto, lettere_extra=lettere_extra, sovrapponi=sovrapponi,
                 )
-
-                path_finale = os.path.join(tmp, "basicart_output.mp4")
-                with st.spinner("Mixaggio audio/video :: Audio/video mixing..."):
-                    mux_audio(path_video_muto, path_in, path_finale, feat["durata"])
 
                 with open(path_finale, "rb") as f:
                     video_bytes = f.read()
