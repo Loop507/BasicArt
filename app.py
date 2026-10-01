@@ -46,7 +46,7 @@ RISOLUZIONI = {
     "1:1   (720x720)": (720, 720),
 }
 
-FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)", "Plasma (interferenza)", "Cometa (starfield prospettico)", "Magma (metaballs)", "Mosaico (celle di Voronoi)", "Galleria (tunnel prospettico)", "Braci (fuoco algoritmico)", "Vita (automa cellulare 2D)", "Morfogenesi (reazione-diffusione)", "Increspatura (onde d'impatto)", "Formica (automa di Langton)", "Circuito (Wireworld)", "Lama (3 linee)", "Radici (frattale di Newton)", "Flusso (flow field)", "Muffa (Physarum)", "Maschera (bitwise rotozoom)", "Traccia (forma d'onda XY)", "Reticolo (moire)", "Corde (curve a filo)"]
+FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)", "Plasma (interferenza)", "Cometa (starfield prospettico)", "Magma (metaballs)", "Mosaico (celle di Voronoi)", "Galleria (tunnel prospettico)", "Braci (fuoco algoritmico)", "Vita (automa cellulare 2D)", "Morfogenesi (reazione-diffusione)", "Increspatura (onde d'impatto)", "Formica (automa di Langton)", "Circuito (Wireworld)", "Lama (3 linee)", "Radici (frattale di Newton)", "Flusso (flow field)", "Muffa (Physarum)", "Maschera (bitwise rotozoom)", "Traccia (forma d'onda XY)", "Reticolo (moire)", "Corde (curve a filo)", "Soglia (dithering a ordine)", "Partizione (rettangoli ricorsivi)"]
 
 # font veri (TTF) per "Iscrizione" — cartella "fonts/" accanto a questo script.
 # Se mancante, l'app ripiega automaticamente sui font Hershey di OpenCV
@@ -3281,6 +3281,213 @@ def disegna_corde(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_b
     return canvas
 
 
+@functools.lru_cache(maxsize=8)
+def _matrice_bayer(n):
+    """Matrice di soglie di Bayer n x n (n potenza di 2), valori in (0,1):
+    l'"ordine in cui i pixel si accendono" al crescere della luminosita'."""
+    m = np.array([[0, 2], [3, 1]], dtype=np.float32)
+    while m.shape[0] < n:
+        m = np.block([[4 * m, 4 * m + 2], [4 * m + 3, 4 * m + 1]])
+    return ((m + 0.5) / float(n * n)).astype(np.float32)
+
+
+def disegna_soglia(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                   colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
+                   dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
+    """Soglia (dithering a ordine): un campo continuo (gradiente) viene
+    quantizzato a UN BIT confrontandolo, pixel per pixel, con una matrice
+    di soglie di Bayer ripetuta su tutto lo schermo. E' il look "1-bit" dei
+    vecchi Mac e dei giochi a due colori: le sfumature esistono solo come
+    densita' di punti, mai come grigi. Tre campi, uno per banda, ciascuno
+    nel proprio colore puro:
+      bassi -> gradiente radiale che orbita (BPM): una macchia di punti
+               che si allarga e si addensa con l'energia dei bassi
+      medi  -> rampa diagonale a dente di sega, ripetuta: fasce che passano
+               da punti radi a pieno, la pendenza ruota con i medi
+      alti  -> rampa a spirale che gira: bracci di punti
+    Ogni campo e' scalato dal livello della sua banda (banda debole = punti
+    radi, banda assente = nessun punto) e la GRANDEZZA della matrice cresce
+    con il livello: banda piano = punti grossi (2x2), forte = grana fine
+    (8x8). Dal grande al fine in sovrapposizione."""
+    _fattore, _k1, _k2, _kl, onset, intensita, velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    bassi = float(np.clip(feat["bassi"][i] * reattivita, 0.0, 1.0))
+    medi = float(np.clip(feat["medi"][i] * reattivita, 0.0, 1.0))
+    alti = float(np.clip(feat["alti"][i] * reattivita, 0.0, 1.0))
+    onset = float(np.clip(onset, 0.0, 1.0))
+
+    h, w = canvas.shape[:2]
+    ris_w = max(260, int(np.sqrt(len(t1_arr)) * 12))
+    ris_h = max(146, int(ris_w * h / w))
+
+    if stato is None:
+        stato = {}
+    chiave = ("soglia", ris_w, ris_h)
+    if stato.get("soglia_chiave") != chiave:
+        asp = ris_w / ris_h
+        stato["soglia_X"] = np.broadcast_to(np.linspace(-asp, asp, ris_w, dtype=np.float32)[None, :], (ris_h, ris_w)).copy()
+        stato["soglia_Y"] = np.broadcast_to(np.linspace(-1.0, 1.0, ris_h, dtype=np.float32)[:, None], (ris_h, ris_w)).copy()
+        stato["soglia_T"] = {}
+        stato["soglia_chiave"] = chiave
+    X, Y = stato["soglia_X"], stato["soglia_Y"]
+
+    def soglie(n):
+        if n not in stato["soglia_T"]:
+            m = _matrice_bayer(n)
+            stato["soglia_T"][n] = np.tile(m, (ris_h // n + 1, ris_w // n + 1))[:ris_h, :ris_w]
+        return stato["soglia_T"][n]
+
+    def grana(valore):
+        return 2 if valore < 0.35 else (4 if valore < 0.70 else 8)
+
+    fase = t_frame * 0.010 * velocita
+    bg_arr = np.array(colore_bg, dtype=np.float32)
+    campo = np.broadcast_to(bg_arr, (ris_h, ris_w, 3)).copy()
+    soglia_presenza = 0.12
+
+    # bassi: gradiente radiale che orbita
+    if bassi > soglia_presenza:
+        ox, oy = 0.45 * np.cos(fase), 0.30 * np.sin(fase * 1.3)
+        dist = np.sqrt((X - ox) ** 2 + (Y - oy) ** 2)
+        R = 0.55 + 1.0 * bassi + 0.4 * onset
+        f = np.clip(1.0 - dist / R, 0.0, 1.0)
+        acceso = (f * (0.45 + 0.55 * bassi)) > soglie(grana(bassi))
+        campo[acceso] = np.array(colore_bassi, dtype=np.float32)
+
+    # medi: rampa diagonale a dente di sega
+    if medi > soglia_presenza:
+        ang = 0.6 + 1.6 * medi
+        fm = np.mod((X * np.cos(ang) + Y * np.sin(ang)) * (0.9 + 1.5 * medi) + fase * 0.8 + 0.3 * onset, 1.0)
+        acceso = (fm * (0.40 + 0.60 * medi)) > soglie(grana(medi))
+        campo[acceso] = np.array(colore_medi, dtype=np.float32)
+
+    # alti: rampa a spirale
+    if alti > soglia_presenza:
+        bracci = 2 + int(alti * 4.99)
+        fa = np.mod(np.arctan2(Y, X) / (2 * np.pi) * bracci + np.sqrt(X * X + Y * Y) * 0.9 - fase * 1.1, 1.0)
+        acceso = (fa * (0.40 + 0.60 * alti)) > soglie(grana(alti))
+        campo[acceso] = np.array(colore_alti, dtype=np.float32)
+
+    k = float(np.clip(intensita, 0.0, 1.0))
+    finale = bg_arr + (campo - bg_arr) * k
+    grande = cv2.resize(finale.astype(np.float32), (w, h), interpolation=cv2.INTER_NEAREST)
+    canvas[:] = np.clip(grande, 0, 255).astype(np.uint8)
+    return canvas
+
+
+_PARTIZIONE_MAX = 140
+
+
+def _piano_partizione(seed=507, n_max=_PARTIZIONE_MAX, aspetto=16.0 / 9.0):
+    """Sequenza FISSA di suddivisioni (calcolata una volta): al passo s si
+    sceglie il blocco da dividere con probabilita' proporzionale alla sua
+    AREA, si divide il lato piu' lungo (in pixel 16:9) in una frazione base,
+    e si assegnano al nuovo blocco una banda e una soglia casuali. Siccome
+    i primi N passi sono sempre gli stessi, aumentare N (piu' energia) AGGIUNGE
+    divisioni senza rimescolare quelle gia' presenti."""
+    rng = np.random.default_rng(seed)
+    rect = [[0.0, 0.0, 1.0, 1.0]]
+    passi = []
+    classi = [int(rng.integers(0, 3))]
+    soglie = [float(rng.uniform(0.05, 0.85))]
+    for _ in range(n_max):
+        aree = np.array([(r[2] - r[0]) * (r[3] - r[1]) for r in rect], dtype=np.float64)
+        idx = int(rng.choice(len(rect), p=aree / aree.sum()))
+        x0, y0, x1, y1 = rect[idx]
+        verticale = (x1 - x0) * aspetto >= (y1 - y0)
+        f = float(rng.uniform(0.28, 0.72))
+        if verticale:
+            xm = x0 + (x1 - x0) * f
+            rect[idx] = [x0, y0, xm, y1]
+            rect.append([xm, y0, x1, y1])
+        else:
+            ym = y0 + (y1 - y0) * f
+            rect[idx] = [x0, y0, x1, ym]
+            rect.append([x0, ym, x1, y1])
+        passi.append((idx, verticale, f))
+        classi.append(int(rng.integers(0, 3)))
+        soglie.append(float(rng.uniform(0.05, 0.85)))
+    return passi, classi, soglie
+
+
+def disegna_partizione(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                       colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
+                       dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
+    """Partizione: suddivisione ricorsiva dello schermo in rettangoli, alla
+    Mondrian -- ogni passo sceglie un blocco (piu' grande = piu' probabile)
+    e lo taglia in due. La sequenza dei tagli e' fissa; l'ENERGIA decide
+    quanti ne esistono in questo istante (silenzio = pochi blocchi enormi,
+    picco = mosaico fitto), e i tagli nuovi si aggiungono senza rimescolare
+    i vecchi. Ogni blocco appartiene a una banda e ha una propria soglia:
+    si accende, nel colore PURO della banda, solo quando quella banda la
+    supera -- una banda assente lascia vuoti tutti i suoi blocchi, mentre
+    una banda forte li accende quasi tutti. Il BPM fa ondeggiare la
+    posizione dei tagli, gli attacchi li spostano a scatto. I blocchi spenti
+    restano come contorno sottile nel colore della loro banda."""
+    _fattore, _k1, _k2, _kl, onset, intensita, velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    livelli = (
+        float(np.clip(feat["bassi"][i] * reattivita, 0.0, 1.0)),
+        float(np.clip(feat["medi"][i] * reattivita, 0.0, 1.0)),
+        float(np.clip(feat["alti"][i] * reattivita, 0.0, 1.0)),
+    )
+    colori = (colore_bassi, colore_medi, colore_alti)
+    onset = float(np.clip(onset, 0.0, 1.0))
+    energia = float(np.clip((0.6 * feat["rms"][i] + 0.4 * feat["bassi"][i]) * reattivita, 0.0, 1.0))
+    h, w = canvas.shape[:2]
+
+    if stato is None:
+        stato = {}
+    if "partizione_piano" not in stato:
+        stato["partizione_piano"] = _piano_partizione()
+    passi, classi, soglie = stato["partizione_piano"]
+
+    n_tagli = int(np.clip(2 + 0.9 * _PARTIZIONE_MAX * energia, 2, _PARTIZIONE_MAX))
+    scala_n = float(np.clip(np.sqrt(len(t1_arr) / 900.0), 0.5, 2.0))
+    n_tagli = int(np.clip(n_tagli * scala_n, 2, _PARTIZIONE_MAX))
+
+    ondeggio = 0.03 + 0.09 * onset
+    fase = t_frame * 0.03 * velocita
+    rect = [[0.0, 0.0, 1.0, 1.0]]
+    for s_idx in range(n_tagli):
+        idx, verticale, f = passi[s_idx]
+        f = float(np.clip(f + ondeggio * np.sin(fase + s_idx * 1.7), 0.15, 0.85))
+        x0, y0, x1, y1 = rect[idx]
+        if verticale:
+            xm = x0 + (x1 - x0) * f
+            rect[idx] = [x0, y0, xm, y1]
+            rect.append([xm, y0, x1, y1])
+        else:
+            ym = y0 + (y1 - y0) * f
+            rect[idx] = [x0, y0, x1, ym]
+            rect.append([x0, ym, x1, y1])
+
+    bg_arr = np.array(colore_bg, dtype=np.float32)
+    k = float(np.clip(intensita, 0.0, 1.0))
+    canvas[:] = np.array(colore_bg, dtype=np.uint8)
+    g = int(max(1, spessore))
+    for rid, (x0, y0, x1, y1) in enumerate(rect):
+        cl = classi[rid]
+        ix0, ix1 = int(x0 * w) + g, int(x1 * w) - g
+        iy0, iy1 = int(y0 * h) + g, int(y1 * h) - g
+        if ix1 <= ix0 or iy1 <= iy0:
+            continue
+        if livelli[cl] > soglie[rid]:
+            # blocco acceso: riempimento pieno nel colore della banda
+            col = bg_arr + (np.array(colori[cl], dtype=np.float32) - bg_arr) * k
+            canvas[iy0:iy1, ix0:ix1] = np.clip(col, 0, 255).astype(np.uint8)
+        else:
+            # blocco spento: solo il contorno (filo di 1 px), cosi' la
+            # struttura della partizione resta leggibile anche con poca
+            # energia, senza introdurre grigi o sfumature
+            col = bg_arr + (np.array(colori[cl], dtype=np.float32) - bg_arr) * k * 0.55
+            cv2.rectangle(canvas, (ix0, iy0), (ix1 - 1, iy1 - 1),
+                          tuple(int(c) for c in np.clip(col, 0, 255)), 1, cv2.LINE_8)
+    return canvas
+
+
 MOTORI = {
     "Deriva (cartesiana)": {"funzione": disegna_ellisse, "n_step": 900, "fade": 0.90},
     "Fioritura (polare)": {"funzione": disegna_loto, "n_step": 3300, "fade": 0.80},
@@ -3315,6 +3522,8 @@ MOTORI = {
     "Traccia (forma d'onda XY)": {"funzione": disegna_traccia, "n_step": 100, "fade": 0.55},
     "Reticolo (moire)": {"funzione": disegna_reticolo, "n_step": 900, "fade": 0.0},
     "Corde (curve a filo)": {"funzione": disegna_corde, "n_step": 900, "fade": 0.35},
+    "Soglia (dithering a ordine)": {"funzione": disegna_soglia, "n_step": 900, "fade": 0.0},
+    "Partizione (rettangoli ricorsivi)": {"funzione": disegna_partizione, "n_step": 900, "fade": 0.0},
 }
 
 
