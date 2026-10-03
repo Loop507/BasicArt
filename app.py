@@ -40,13 +40,19 @@ from PIL import Image, ImageDraw, ImageFont
 FPS = 30
 MAX_DURATION_S = 240             # cap di sicurezza per il rendering (4 minuti)
 
+# qualita H.264: CRF piu alto = file piu piccoli (18 ~ quasi lossless, 23 = standard).
+# Le forme a pattern binari fitti (Tappeto, Reticolo, Soglia, Maschera) pesano molto: a CRF 23
+# ~2 MB/s a 720p (a CRF 18 ~3 MB/s). Per brani lunghi alzare il CRF (es. 28) riduce ancora.
+VIDEO_CRF = 23
+VIDEO_PRESET = "veryfast"
+
 RISOLUZIONI = {
     "16:9  (1280x720)": (1280, 720),
     "9:16  (720x1280)": (720, 1280),
     "1:1   (720x720)": (720, 720),
 }
 
-FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)", "Plasma (interferenza)", "Cometa (starfield prospettico)", "Magma (metaballs)", "Mosaico (celle di Voronoi)", "Galleria (tunnel prospettico)", "Braci (fuoco algoritmico)", "Vita (automa cellulare 2D)", "Morfogenesi (reazione-diffusione)", "Increspatura (onde d'impatto)", "Formica (automa di Langton)", "Circuito (Wireworld)", "Lama (3 linee)", "Radici (frattale di Newton)", "Flusso (flow field)", "Muffa (Physarum)", "Maschera (bitwise rotozoom)", "Traccia (forma d'onda XY)", "Reticolo (moire)", "Corde (curve a filo)", "Soglia (dithering a ordine)", "Partizione (rettangoli ricorsivi)"]
+FORME = ["Deriva (cartesiana)", "Fioritura (polare)", "Pulviscolo (cartesiana)", "Graffio (random walk)", "Sismografo (verticali)", "Frontiera (piano complesso)", "Aritmia (verticali)", "Iscrizione (testo a tempo)", "Sinapsi (rete)", "Labirinto (tasselli)", "Risonanza (placca)", "Statica (automa)", "Poliedro (wireframe)", "Epicicli (Fourier)", "Plasma (interferenza)", "Cometa (starfield prospettico)", "Magma (metaballs)", "Mosaico (celle di Voronoi)", "Galleria (tunnel prospettico)", "Braci (fuoco algoritmico)", "Vita (automa cellulare 2D)", "Morfogenesi (reazione-diffusione)", "Increspatura (onde d'impatto)", "Formica (automa di Langton)", "Circuito (Wireworld)", "Lama (3 linee)", "Radici (frattale di Newton)", "Flusso (flow field)", "Muffa (Physarum)", "Maschera (bitwise rotozoom)", "Traccia (forma d'onda XY)", "Reticolo (moire)", "Corde (curve a filo)", "Soglia (dithering a ordine)", "Partizione (rettangoli ricorsivi)", "Nastri (barre alla Kefrens)", "Percorso (curva di Hilbert)", "Isolinee (curve di livello)", "Tappeto (Sierpinski base 3)"]
 
 # font veri (TTF) per "Iscrizione" — cartella "fonts/" accanto a questo script.
 # Se mancante, l'app ripiega automaticamente sui font Hershey di OpenCV
@@ -3488,6 +3494,318 @@ def disegna_partizione(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, col
     return canvas
 
 
+def disegna_nastri(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                   colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
+                   dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
+    """Nastri (alla Kefrens): in ogni riga dello schermo si pianta una
+    "barra" in una posizione x(y) data da somme di sinusoidi; la riga
+    successiva non cancella quello che c'e', ma la barra resta visibile per
+    le M righe seguenti (scia verticale). Dove la curva corre in orizzontale
+    la scia si allarga, dove inverte direzione si stringe: il risultato e'
+    un nastro che sembra torcersi nello spazio, pur essendo solo una
+    funzione di (riga, tempo). Era l'effetto delle demo Amiga: un solo
+    buffer di riga ripetuto lungo tutto lo schermo. Tre nastri, uno per
+    banda, ciascuno nel proprio colore puro:
+      bassi -> ampiezza dell'oscillazione e lunghezza della scia M
+      medi  -> frequenza lungo lo schermo (quante torsioni)
+      alti  -> seconda armonica (increspatura veloce sul nastro)
+    Nastro assente se la sua banda e' sotto soglia; il BPM scorre la fase,
+    gli attacchi la fanno scattare. Nessuna sfumatura: dentro/fuori."""
+    _fattore, _k1, _k2, _kl, onset, intensita, velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    bassi = float(np.clip(feat["bassi"][i] * reattivita, 0.0, 1.0))
+    medi = float(np.clip(feat["medi"][i] * reattivita, 0.0, 1.0))
+    alti = float(np.clip(feat["alti"][i] * reattivita, 0.0, 1.0))
+    onset = float(np.clip(onset, 0.0, 1.0))
+
+    h, w = canvas.shape[:2]
+    ris_w = max(240, int(np.sqrt(len(t1_arr)) * 10))
+    ris_h = max(135, int(ris_w * h / w))
+    righe = np.arange(ris_h, dtype=np.float32)
+
+    fase = t_frame * 0.045 * velocita + 2.5 * onset
+    bg_arr = np.array(colore_bg, dtype=np.float32)
+    campo = np.broadcast_to(bg_arr, (ris_h, ris_w, 3)).copy()
+    soglia = 0.08
+    larg = max(1, int(round(ris_w * 0.012 * max(1, spessore))))
+    traccia_max = int(6 + 46 * bassi)
+
+    # (livello della banda, colore, centro orizzontale relativo, fase propria)
+    nastri = (
+        (bassi, colore_bassi, 0.50, 0.0),
+        (medi, colore_medi, 0.30, 2.1),
+        (alti, colore_alti, 0.70, 4.2),
+    )
+    ampiezza_base = 0.16 + 0.22 * bassi
+    freq = 0.020 + 0.050 * medi
+    for idx, (valore, col, centro, fase_k) in enumerate(nastri):
+        if valore <= soglia:
+            continue
+        xs = (centro + ampiezza_base * np.sin(freq * righe * (1.0 + 0.35 * idx) + fase + fase_k)
+              + (0.03 + 0.06 * alti) * np.sin(0.21 * righe + 1.9 * fase + fase_k)) * ris_w
+        xs = np.clip(xs, larg, ris_w - larg - 1).astype(np.int32)
+        arr = np.zeros((ris_h, ris_w), dtype=np.uint8)
+        rr = np.arange(ris_h)
+        for d in range(-larg, larg + 1):
+            arr[rr, np.clip(xs + d, 0, ris_w - 1)] = 1
+        # scia verticale: la barra resta per le M righe successive
+        uscita = arr.copy()
+        for m in range(1, traccia_max):
+            uscita[m:] |= arr[:ris_h - m]
+        campo[uscita.astype(bool)] = np.array(col, dtype=np.float32)
+
+    k = float(np.clip(intensita, 0.0, 1.0))
+    finale = bg_arr + (campo - bg_arr) * k
+    grande = cv2.resize(finale.astype(np.float32), (w, h), interpolation=cv2.INTER_NEAREST)
+    canvas[:] = np.clip(grande, 0, 255).astype(np.uint8)
+    return canvas
+
+
+@functools.lru_cache(maxsize=8)
+def _hilbert_punti(ordine):
+    """Punti (x, y) in ordine lungo la curva di Hilbert di dato ordine su
+    una griglia 2^ordine x 2^ordine. Algoritmo classico indice -> coordinate."""
+    n = 1 << ordine
+    pts = np.zeros((n * n, 2), dtype=np.int32)
+    for d in range(n * n):
+        t = d
+        x = y = 0
+        sc = 1
+        while sc < n:
+            rx = 1 & (t // 2)
+            ry = 1 & (t ^ rx)
+            if ry == 0:
+                if rx == 1:
+                    x = sc - 1 - x
+                    y = sc - 1 - y
+                x, y = y, x
+            x += sc * rx
+            y += sc * ry
+            t //= 4
+            sc *= 2
+        pts[d] = (x, y)
+    return pts
+
+
+def disegna_percorso(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                     colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
+                     dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
+    """Percorso (curva di Hilbert): una curva che riempie tutto lo schermo
+    passando una volta sola per ogni cella di una griglia, con soli tratti
+    ortogonali; un "serpente" di lunghezza variabile la percorre. Tre
+    curve a scale diverse sovrapposte, una per banda e nel proprio colore
+    puro: bassi = ordine 3 (griglia 8x8, tratti enormi), medi = ordine 4
+    (16x16), alti = ordine 5 (32x32, tratti fini). Per ogni banda:
+      lunghezza del serpente -> livello della banda (piano = un moncone,
+                                forte = meta' del percorso)
+      posizione della testa  -> BPM (scorre) + livello (spostamento diretto)
+    La banda assente non disegna il suo serpente. Topologia: curva
+    frattale riempitiva, diversa da labirinto (tasselli) e random walk."""
+    _fattore, _k1, _k2, _kl, onset, intensita, velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    livelli = (
+        float(np.clip(feat["bassi"][i] * reattivita, 0.0, 1.0)),
+        float(np.clip(feat["medi"][i] * reattivita, 0.0, 1.0)),
+        float(np.clip(feat["alti"][i] * reattivita, 0.0, 1.0)),
+    )
+    onset = float(np.clip(onset, 0.0, 1.0))
+    h, w = canvas.shape[:2]
+    bg_arr = np.array(colore_bg, dtype=np.float32)
+    k = float(np.clip(intensita, 0.0, 1.0))
+    sec = t_frame / float(fps)
+
+    if stato is None:
+        stato = {}
+    cache = stato.setdefault("percorso_cache", {})
+
+    for (ordine, val, col_banda, cicli) in ((3, livelli[0], colore_bassi, 0.10),
+                                            (4, livelli[1], colore_medi, 0.07),
+                                            (5, livelli[2], colore_alti, 0.05)):
+        if val < 0.08:
+            continue
+        chiave = (ordine, w, h)
+        if chiave not in cache:
+            n = 1 << ordine
+            pts = _hilbert_punti(ordine).astype(np.float32)
+            cache[chiave] = np.stack([(pts[:, 0] + 0.5) / n * w, (pts[:, 1] + 0.5) / n * h], axis=1).astype(np.int32)
+        P = cache[chiave]
+        N = len(P)
+        lunghezza = max(3, int(N * (0.05 + 0.50 * val)))
+        testa = int(sec * velocita * cicli * N + 0.45 * val * N + 0.15 * onset * N) % N
+        col = bg_arr + (np.array(col_banda, dtype=np.float32) - bg_arr) * k
+        colore = tuple(int(c) for c in np.clip(col, 0, 255))
+        fine = testa + lunghezza
+        tratti = [P[testa:min(fine, N)]]
+        if fine > N:
+            tratti.append(P[0:fine - N])
+        for tr in tratti:
+            if len(tr) >= 2:
+                cv2.polylines(canvas, [tr.reshape(-1, 1, 2)], False, colore, int(max(1, spessore)), cv2.LINE_8)
+    return canvas
+
+
+def disegna_isolinee(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                     colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
+                     dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
+    """Isolinee (curve di livello): un campo scalare 2D, somma di tre
+    componenti, viene quantizzato in N livelli e si disegnano solo i
+    CONFINI fra un livello e l'altro, come le curve di livello di una
+    carta topografica (e' il risultato che dara' l'algoritmo marching
+    squares, ottenuto qui per confronto fra celle vicine). Le tre componenti
+    sono una per banda:
+      bassi -> colline gaussiane larghe che orbitano (BPM), altezza = bassi
+      medi  -> onda piana che attraversa lo schermo, ampiezza = medi
+      alti  -> increspature circolari fitte da un punto mobile, ampiezza = alti
+    Il numero di livelli cresce con l'energia (piu' linee = carta piu'
+    ripida). Ogni linea prende il colore PURO della banda che in quel punto
+    contribuisce di piu' al campo: dove manca una banda manca il suo colore.
+    Topologia diversa da Metaballs (che riempie la soglia): qui contano solo
+    i bordi, su molti livelli."""
+    _fattore, _k1, _k2, _kl, onset, intensita, velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    bassi = float(np.clip(feat["bassi"][i] * reattivita, 0.0, 1.0))
+    medi = float(np.clip(feat["medi"][i] * reattivita, 0.0, 1.0))
+    alti = float(np.clip(feat["alti"][i] * reattivita, 0.0, 1.0))
+    onset = float(np.clip(onset, 0.0, 1.0))
+    energia = float(np.clip((0.6 * feat["rms"][i] + 0.4 * feat["bassi"][i]) * reattivita, 0.0, 1.0))
+
+    h, w = canvas.shape[:2]
+    ris_w = int(min(w, max(320, 420 + int(np.sqrt(len(t1_arr)) * 4))))
+    ris_h = max(180, int(ris_w * h / w))
+
+    if stato is None:
+        stato = {}
+    chiave = ("isolinee", ris_w, ris_h)
+    if stato.get("isolinee_chiave") != chiave:
+        asp = ris_w / ris_h
+        stato["isolinee_X"] = np.broadcast_to(np.linspace(-asp, asp, ris_w, dtype=np.float32)[None, :], (ris_h, ris_w)).copy()
+        stato["isolinee_Y"] = np.broadcast_to(np.linspace(-1.0, 1.0, ris_h, dtype=np.float32)[:, None], (ris_h, ris_w)).copy()
+        stato["isolinee_chiave"] = chiave
+    X, Y = stato["isolinee_X"], stato["isolinee_Y"]
+
+    ph = t_frame * 0.012 * velocita + 1.5 * onset
+    # bassi: tre colline gaussiane che orbitano
+    Fb = np.zeros_like(X)
+    if bassi > 0.05:
+        larg = 0.16 + 0.12 * bassi
+        for c in range(3):
+            ox = 0.75 * np.cos(ph * 0.7 + c * 2.1)
+            oy = 0.45 * np.sin(ph * 1.0 + c * 1.3)
+            Fb += np.exp(-((X - ox) ** 2 + (Y - oy) ** 2) / larg)
+        Fb *= bassi * 0.9
+    # medi: onda piana
+    Fm = np.zeros_like(X)
+    if medi > 0.05:
+        th = 0.5 + 0.9 * np.sin(ph * 0.5)
+        Fm = medi * 0.55 * (0.5 + 0.5 * np.sin((X * np.cos(th) + Y * np.sin(th)) * (3.0 + 6.0 * medi) + ph * 2.0))
+    # alti: increspature circolari
+    Fa = np.zeros_like(X)
+    if alti > 0.05:
+        ax, ay = 0.6 * np.cos(ph * 1.7), 0.4 * np.sin(ph * 1.3)
+        r = np.sqrt((X - ax) ** 2 + (Y - ay) ** 2)
+        Fa = alti * 0.5 * (0.5 + 0.5 * np.sin(r * (10.0 + 18.0 * alti) - ph * 3.0))
+
+    F = Fb + Fm + Fa
+    n_liv = 5 + int(14 * energia)
+    q = np.floor(F * n_liv).astype(np.int32)
+    bordo = np.zeros(q.shape, dtype=bool)
+    bordo[:, :-1] |= q[:, 1:] != q[:, :-1]
+    bordo[:-1, :] |= q[1:, :] != q[:-1, :]
+    if spessore >= 2:
+        kd = int(spessore)
+        bordo = cv2.dilate(bordo.astype(np.uint8), np.ones((kd, kd), np.uint8)).astype(bool)
+
+    dominante = np.argmax(np.stack([Fb, Fm, Fa], axis=0), axis=0)
+    colori = np.array([colore_bassi, colore_medi, colore_alti], dtype=np.float32)
+    bg_arr = np.array(colore_bg, dtype=np.float32)
+    kk = float(np.clip(intensita, 0.0, 1.0))
+    piccolo = np.broadcast_to(bg_arr, (ris_h, ris_w, 3)).copy()
+    accese = bordo & (F > 1e-4)
+    piccolo[accese] = bg_arr + (colori[dominante[accese]] - bg_arr) * kk
+    grande = cv2.resize(piccolo.astype(np.float32), (w, h), interpolation=cv2.INTER_NEAREST)
+    canvas[:] = np.clip(grande, 0, 255).astype(np.uint8)
+    return canvas
+
+
+def disegna_tappeto(canvas, t_frame, feat, i, cx, cy, raggio_x, raggio_y, colore_bassi, colore_medi,
+                    colore_alti, t1_arr, fps, reattivita=1.0, spessore=2, stato=None, frase="",
+                    dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, colore_bg=(0, 0, 0)):
+    """Tappeto (di Sierpinski): ogni coordinata viene scritta in base 3 e un
+    punto e' un "buco" al primo livello in cui la cifra di x e quella di y
+    valgono entrambe 1 -- il quadrato centrale, poi i quadrati centrali dei
+    8 quadrati attorno, e cosi' via. Aritmetica a cifre, non geometria: la
+    stessa idea dei bit di Maschera ma in base 3. La GERARCHIA del frattale
+    e' mappata sullo spettro: i buchi dei livelli 1-2 (i piu' grandi) sono
+    i bassi, i livelli 3-4 i medi, i livelli 5-6 (i piu' fini) gli alti,
+    ciascuno nel proprio colore puro; il secondo livello di ogni banda
+    compare solo se la banda e' forte. Una banda assente cancella la sua
+    scala del frattale. Zoom che respira (BPM, ampiezza dai bassi), rotazione
+    dai medi, centro che vaga, attacchi che scattano. Il resto e' sfondo."""
+    _fattore, _k1, _k2, _kl, onset, intensita, velocita = _parametri_da_audio(
+        feat, i, t_frame, fps, reattivita
+    )
+    livelli_b = (
+        float(np.clip(feat["bassi"][i] * reattivita, 0.0, 1.0)),
+        float(np.clip(feat["medi"][i] * reattivita, 0.0, 1.0)),
+        float(np.clip(feat["alti"][i] * reattivita, 0.0, 1.0)),
+    )
+    onset = float(np.clip(onset, 0.0, 1.0))
+    h, w = canvas.shape[:2]
+    ris_w = max(300, int(np.sqrt(len(t1_arr)) * 12))
+    ris_h = max(169, int(ris_w * h / w))
+
+    if stato is None:
+        stato = {}
+    chiave = ("tappeto", ris_w, ris_h)
+    if stato.get("tappeto_chiave") != chiave:
+        asp = ris_w / ris_h
+        stato["tappeto_X"] = np.broadcast_to(np.linspace(-asp, asp, ris_w, dtype=np.float32)[None, :], (ris_h, ris_w)).copy()
+        stato["tappeto_Y"] = np.broadcast_to(np.linspace(-1.0, 1.0, ris_h, dtype=np.float32)[:, None], (ris_h, ris_w)).copy()
+        stato["tappeto_chiave"] = chiave
+    X, Y = stato["tappeto_X"], stato["tappeto_Y"]
+
+    ph = t_frame * 0.010 * velocita
+    ang = ph * 0.30 + 0.5 * livelli_b[1] + 0.4 * onset
+    ca, sa = np.cos(ang), np.sin(ang)
+    respiro = 0.5 + 0.5 * np.sin(ph * 2.0)
+    prof = 0.25 + 1.75 * livelli_b[0] * respiro          # profondita' dello zoom (in livelli base 3)
+    sc = 0.9 * (3.0 ** (-prof))
+    c0x = 0.5 + 0.17 * np.cos(ph)
+    c0y = 0.5 + 0.17 * np.sin(1.3 * ph)
+    u = np.mod(c0x + (X * ca - Y * sa) * sc, 1.0)
+    v = np.mod(c0y + (X * sa + Y * ca) * sc, 1.0)
+
+    L = 6
+    N = 3 ** L
+    ui = np.clip((u * N).astype(np.int32), 0, N - 1)
+    vi = np.clip((v * N).astype(np.int32), 0, N - 1)
+    livello = np.zeros(ui.shape, dtype=np.int8)
+    trovato = np.zeros(ui.shape, dtype=bool)
+    for j in range(1, L + 1):
+        d = 3 ** (L - j)
+        buco = (((ui // d) % 3) == 1) & (((vi // d) % 3) == 1) & ~trovato
+        livello[buco] = j
+        trovato |= buco
+
+    bg_arr = np.array(colore_bg, dtype=np.float32)
+    kk = float(np.clip(intensita, 0.0, 1.0))
+    colori = (colore_bassi, colore_medi, colore_alti)
+    piccolo = np.broadcast_to(bg_arr, (ris_h, ris_w, 3)).copy()
+    for j in range(1, L + 1):
+        banda = (j - 1) // 2
+        valore = livelli_b[banda]
+        soglia = 0.10 if (j % 2 == 1) else 0.45
+        if valore > soglia:
+            col = bg_arr + (np.array(colori[banda], dtype=np.float32) - bg_arr) * kk
+            piccolo[livello == j] = col
+    grande = cv2.resize(piccolo.astype(np.float32), (w, h), interpolation=cv2.INTER_NEAREST)
+    canvas[:] = np.clip(grande, 0, 255).astype(np.uint8)
+    return canvas
+
+
 MOTORI = {
     "Deriva (cartesiana)": {"funzione": disegna_ellisse, "n_step": 900, "fade": 0.90},
     "Fioritura (polare)": {"funzione": disegna_loto, "n_step": 3300, "fade": 0.80},
@@ -3524,6 +3842,10 @@ MOTORI = {
     "Corde (curve a filo)": {"funzione": disegna_corde, "n_step": 900, "fade": 0.35},
     "Soglia (dithering a ordine)": {"funzione": disegna_soglia, "n_step": 900, "fade": 0.0},
     "Partizione (rettangoli ricorsivi)": {"funzione": disegna_partizione, "n_step": 900, "fade": 0.0},
+    "Nastri (barre alla Kefrens)": {"funzione": disegna_nastri, "n_step": 900, "fade": 0.0},
+    "Percorso (curva di Hilbert)": {"funzione": disegna_percorso, "n_step": 100, "fade": 0.45},
+    "Isolinee (curve di livello)": {"funzione": disegna_isolinee, "n_step": 900, "fade": 0.0},
+    "Tappeto (Sierpinski base 3)": {"funzione": disegna_tappeto, "n_step": 900, "fade": 0.0},
 }
 
 
@@ -3539,7 +3861,7 @@ def _apri_ffmpeg(path_out, path_audio, width, height, fps, durata):
         "-r", str(fps), "-i", "-",
         "-i", path_audio,
         "-map", "0:v:0", "-map", "1:a:0",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
+        "-c:v", "libx264", "-preset", VIDEO_PRESET, "-crf", str(VIDEO_CRF), "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "192k",
         "-t", f"{durata:.3f}", "-movflags", "+faststart",
         path_out,
@@ -3548,9 +3870,68 @@ def _apri_ffmpeg(path_out, path_audio, width, height, fps, durata):
     return proc, log.name
 
 
+def applica_pixel_sort(frame, feat, i, forza, seed=507):
+    """Pixel sorting audio-reattivo, applicato SOLO al fotogramma in uscita
+    (mai riportato nello stato della forma: la scia e le simulazioni non ne
+    risentono). In alcune fasce orizzontali di righe, dentro un tratto
+    orizzontale scelto a caso, TUTTI i pixel vengono riordinati per
+    luminosita': i colori puri e lo sfondo si separano e "colano" in
+    strisce, come nel glitch da databending.
+      numero di fasce   -> forza dell'effetto + energia + attacco
+      altezza fasce     -> forza dell'effetto
+      lunghezza tratto  -> forza + energia (piu' energia = strisce piu' lunghe)
+      verso del riordino (chiaro->scuro o scuro->chiaro) -> casuale per fascia
+    Le fasce restano uguali per 3 fotogrammi (glitch a ~10 Hz, non rumore a
+    30). Deterministico: stesso brano e stesso seed danno lo stesso risultato."""
+    if forza <= 0.0:
+        return frame
+    h, w = frame.shape[:2]
+    _f, _k1, _k2, _kl, onset, _intensita, _vel = _parametri_da_audio(feat, i, i, FPS, 1.0)
+    energia = float(np.clip(0.6 * feat["rms"][i] + 0.4 * feat["bassi"][i], 0.0, 1.0))
+    onset = float(np.clip(onset, 0.0, 1.0))
+    rng = np.random.default_rng(seed + (i // 3) * 7919)
+
+    n_fasce = 1 + int(forza * (3 + 9 * energia) + 5 * onset * forza)
+    x_da = np.zeros(h, dtype=np.int32)
+    x_a = np.zeros(h, dtype=np.int32)
+    segno = np.ones(h, dtype=np.float32)
+    attive = np.zeros(h, dtype=bool)
+    for _ in range(n_fasce):
+        inizio = int(rng.integers(0, h))
+        alt = int(rng.integers(max(2, h // 120), max(4, int(h * (0.04 + 0.12 * forza)))))
+        frazione = float(np.clip(0.20 + 0.45 * forza + 0.35 * energia * rng.random(), 0.15, 1.0))
+        lung = int(w * frazione)
+        x0 = int(rng.integers(0, max(1, w - lung + 1)))
+        verso = 1.0 if rng.random() < 0.5 else -1.0
+        sl = slice(inizio, inizio + alt)
+        attive[sl] = True
+        x_da[sl] = x0
+        x_a[sl] = x0 + lung
+        segno[sl] = verso
+    sel = np.nonzero(attive)[0]
+    if sel.size == 0:
+        return frame
+
+    sub = frame[sel]
+    lum = (0.114 * sub[:, :, 0] + 0.587 * sub[:, :, 1] + 0.299 * sub[:, :, 2]).astype(np.float32)
+    cols = np.arange(w)[None, :]
+    mask = (cols >= x_da[sel][:, None]) & (cols < x_a[sel][:, None])
+    chiavi = np.where(mask, lum * segno[sel][:, None], np.inf)
+    ord_valori = np.argsort(chiavi, axis=1, kind="stable")
+    pos_mask = np.argsort(np.where(mask, cols, w + cols), axis=1, kind="stable")
+    conta = mask.sum(axis=1)
+    valido = cols < conta[:, None]
+    righe_idx = np.broadcast_to(np.arange(sel.size)[:, None], (sel.size, w))
+    out = sub.copy()
+    out[righe_idx[valido], pos_mask[valido]] = sub[righe_idx[valido], ord_valori[valido]]
+    risultato = frame.copy()
+    risultato[sel] = out
+    return risultato
+
+
 def genera_video(feat, path_out, path_audio, width, height, colore_bg, colore_bassi, colore_medi, colore_alti,
                   forma, fps=FPS, seed=507, densita=1.0, spessore=2, reattivita=1.0, frase="",
-                  dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False):
+                  dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, pixel_sort=0.0):
     np.random.seed(seed)
     cx, cy = width // 2, height // 2
     # scala anisotropica sui due assi (invece di un unico raggio isotropo):
@@ -3593,8 +3974,11 @@ def genera_video(feat, path_out, path_audio, width, height, colore_bg, colore_ba
         )
         canvas = canvas_u8.astype(np.float32)
 
+        # il pixel sorting vive solo sul fotogramma scritto: lo stato (canvas)
+        # resta quello non alterato, cosi' scie e simulazioni non ne risentono
+        frame_out = applica_pixel_sort(canvas_u8, feat, i, pixel_sort, seed) if pixel_sort > 0 else canvas_u8
         try:
-            proc.stdin.write(np.ascontiguousarray(canvas_u8).tobytes())
+            proc.stdin.write(np.ascontiguousarray(frame_out).tobytes())
         except (BrokenPipeError, OSError):
             break   # ffmpeg e' terminato: l'errore viene riportato sotto
 
@@ -3622,7 +4006,7 @@ def genera_video(feat, path_out, path_audio, width, height, colore_bg, colore_ba
 
 def genera_anteprima(feat, width, height, colore_bg, colore_bassi, colore_medi, colore_alti, forma,
                       densita, spessore, reattivita, seed=507, finestra_s=4.0, fps=FPS, frase="",
-                      dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False):
+                      dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, pixel_sort=0.0):
     """Genera un'immagine statica che mostra come apparirebbe il pattern al
     picco energetico del brano (RMS+bassi massimi). Simula solo la finestra
     di pochi secondi che precede il picco (la scia decade rapidamente, quindi
@@ -3669,13 +4053,16 @@ def genera_anteprima(feat, width, height, colore_bg, colore_bassi, colore_medi, 
         )
         canvas = canvas_u8.astype(np.float32)
 
-    return canvas.astype(np.uint8), i_picco
+    immagine = canvas.astype(np.uint8)
+    if pixel_sort > 0:
+        immagine = applica_pixel_sort(immagine, feat, i_picco, pixel_sort, seed)
+    return immagine, i_picco
 
 
 @st.cache_data(show_spinner=False, max_entries=24)
 def anteprima_cache(chiave_audio, _feat, width, height, colore_bg, colore_bassi, colore_medi,
                     colore_alti, forma, densita, spessore, reattivita, frase, dimensione_testo,
-                    font_scelto, lettere_extra, sovrapponi):
+                    font_scelto, lettere_extra, sovrapponi, pixel_sort=0.0):
     """Anteprima memorizzata per combinazione di parametri: ripremere lo
     stesso slider o tornare a una forma gia' vista non rifa' la simulazione
     (~4 s di frame). _feat e' escluso dall'hash: lo identifica chiave_audio."""
@@ -3683,12 +4070,13 @@ def anteprima_cache(chiave_audio, _feat, width, height, colore_bg, colore_bassi,
         _feat, width, height, colore_bg, colore_bassi, colore_medi, colore_alti, forma,
         densita, spessore, reattivita, frase=frase, dimensione_testo=dimensione_testo,
         font_scelto=font_scelto, lettere_extra=lettere_extra, sovrapponi=sovrapponi,
+        pixel_sort=pixel_sort,
     )
 
 
 def genera_report(nome_file, forma, width, height, risoluzione_label, feat,
                    hex_bg, hex_bassi, hex_medi, hex_alti, densita, spessore, reattivita, seed, vol,
-                   frase="", font_scelto=None, sovrapponi=False):
+                   frase="", font_scelto=None, sovrapponi=False, pixel_sort=0.0):
     """Report bilingue IT/EN stile Loop507 (blocco IT completo seguito dal
     blocco EN completo, formato compatto senza separatori — come da
     modello fornito). Restituisce sia la versione da mostrare in chat
@@ -3709,6 +4097,10 @@ def genera_report(nome_file, forma, width, height, risoluzione_label, feat,
             f"FONT            :: {nome_font}\n"
             f"STACKED PHRASES :: {'YES' if sovrapponi else 'NO'}\n"
         )
+
+    if pixel_sort > 0:
+        riga_extra_it += f"PIXEL SORTING   :: {pixel_sort:.2f}\n"
+        riga_extra_en += f"PIXEL SORTING   :: {pixel_sort:.2f}\n"
 
     it = (
         f"[BASICART] // Vol. {vol:03d}\n"
@@ -3833,6 +4225,15 @@ def main():
                  "disappearing before the next one"
         )
 
+    pixel_sort = st.slider(
+        "Pixel sorting (effetto glitch) :: Pixel sorting (glitch effect)", 0.0, 1.0, 0.0, 0.05,
+        help="0 = spento. Sopra una qualsiasi forma, in fasce di righe i pixel luminosi si riordinano "
+             "per luminosita' e colano in strisce; numero e altezza delle fasce seguono energia e "
+             "attacchi del brano :: 0 = off. On top of any shape, bands of rows get their bright "
+             "pixels re-sorted by brightness into streaks; number and height of bands follow the "
+             "track's energy and attacks"
+    )
+
     col1, col2 = st.columns(2)
     with col1:
         risoluzione_label = st.selectbox(
@@ -3926,7 +4327,7 @@ def main():
             anteprima_bgr, i_picco = anteprima_cache(
                 chiave_file, feat, width, height, colore_bg, colore_bassi, colore_medi, colore_alti,
                 forma, densita, spessore, reattivita, frase, dimensione_testo, font_scelto,
-                lettere_extra, sovrapponi,
+                lettere_extra, sovrapponi, pixel_sort,
             )
         anteprima_rgb = cv2.cvtColor(anteprima_bgr, cv2.COLOR_BGR2RGB)
         didascalia = (f"Anteprima al picco audio ({i_picco / FPS:.1f}s) :: "
@@ -3952,6 +4353,7 @@ def main():
                     colore_bassi, colore_medi, colore_alti, forma,
                     densita=densita, spessore=spessore, reattivita=reattivita, frase=frase,
                     dimensione_testo=dimensione_testo, font_scelto=font_scelto, lettere_extra=lettere_extra, sovrapponi=sovrapponi,
+                    pixel_sort=pixel_sort,
                 )
 
                 with open(path_finale, "rb") as f:
@@ -3970,6 +4372,7 @@ def main():
                     nome_file, forma, width, height, risoluzione_label, feat,
                     hex_bg, hex_bassi, hex_medi, hex_alti, densita, spessore, reattivita,
                     seed=507, vol=vol, frase=frase, font_scelto=font_scelto, sovrapponi=sovrapponi,
+                    pixel_sort=pixel_sort,
                 )
                 st.session_state["basicart_report_md"] = report_md
                 st.session_state["basicart_report_txt"] = report_txt
