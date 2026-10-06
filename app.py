@@ -93,9 +93,11 @@ STIMA_FORMA = {
 }
 # peso relativo al CRF 23 (misurato su Deriva, Tappeto, Isolinee)
 FATTORE_PESO_CRF = {23: 1.0, 28: 0.65, 32: 0.45}
-# oltre questo peso stimato (MB) il video e' a rischio su RAM limitata (Streamlit Cloud):
-# la qualita' "Auto" alza il CRF finche' la stima rientra, e la UI avvisa se non basta
-PESO_MAX_MB = 250
+# tetto di peso del video (MB), regolabile dalla UI: ffmpeg lo rispetta SEMPRE (vincolo di
+# bitrate), anche se la stima per forma sbaglia perche' il peso dipende dal brano
+# (stessa forma: 0.7 MB/s con audio semplice, 2 MB/s con audio denso).
+# Default prudente per RAM limitata (Streamlit Cloud)
+PESO_MAX_MB = 150
 QUALITA_VIDEO = {
     "Auto": "auto",
     "Standard (CRF 23)": 23,
@@ -3906,19 +3908,26 @@ MOTORI = {
 }
 
 
-def _apri_ffmpeg(path_out, path_audio, width, height, fps, durata, crf=VIDEO_CRF):
+def _apri_ffmpeg(path_out, path_audio, width, height, fps, durata, crf=VIDEO_CRF, peso_max_mb=None):
     """Avvia ffmpeg con i frame grezzi BGR da stdin: UNA sola codifica
     H.264 con l'audio gia' dentro (prima: mp4v di OpenCV + ricodifica
     libx264 di MoviePy = doppia perdita di qualita' e doppio tempo).
     Il log di ffmpeg va su file, non su pipe, per evitare blocchi."""
     log = tempfile.NamedTemporaryFile(delete=False, suffix=".log")
+    # tetto di peso GARANTITO: CRF con vincolo di bitrate massimo (VBV). La qualita' scende
+    # solo quando il brano e la forma farebbero superare il tetto; altrimenti il CRF decide
+    vbv = []
+    if peso_max_mb:
+        kbps_totali = peso_max_mb * 8000.0 / max(durata, 1.0)
+        kbps_video = max(300, int(kbps_totali * 0.92 - 192))   # 192k audio + 8% di margine
+        vbv = ["-maxrate", f"{kbps_video}k", "-bufsize", f"{2 * kbps_video}k"]
     cmd = [
         imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-loglevel", "error",
         "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{width}x{height}",
         "-r", str(fps), "-i", "-",
         "-i", path_audio,
         "-map", "0:v:0", "-map", "1:a:0",
-        "-c:v", "libx264", "-preset", VIDEO_PRESET, "-crf", str(int(crf)), "-pix_fmt", "yuv420p",
+        "-c:v", "libx264", "-preset", VIDEO_PRESET, "-crf", str(int(crf)), *vbv, "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "192k",
         "-t", f"{durata:.3f}", "-movflags", "+faststart",
         path_out,
@@ -4002,14 +4011,14 @@ def stima_render(forma, durata_s, width, height, densita, crf):
     return tempo, peso
 
 
-def scegli_crf(forma, durata_s, width, height, qualita):
+def scegli_crf(forma, durata_s, width, height, qualita, peso_max_mb=PESO_MAX_MB):
     """qualita = "auto" oppure un CRF fisso. In auto: il CRF piu' basso (migliore) fra
-    23/28/32 la cui stima di peso rientra in PESO_MAX_MB; se nessuno rientra, 32."""
+    23/28/32 la cui stima di peso rientra nel tetto; se nessuno rientra, 32."""
     if qualita != "auto":
         return int(qualita)
     for crf in (23, 28, 32):
         _t, peso = stima_render(forma, durata_s, width, height, 1.0, crf)
-        if peso <= PESO_MAX_MB:
+        if peso <= peso_max_mb:
             return crf
     return 32
 
@@ -4024,7 +4033,7 @@ def _formatta_durata(secondi):
 def genera_video(feat, path_out, path_audio, width, height, colore_bg, colore_bassi, colore_medi, colore_alti,
                   forma, fps=FPS, seed=507, densita=1.0, spessore=2, reattivita=1.0, frase="",
                   dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, pixel_sort=0.0,
-                  crf=VIDEO_CRF):
+                  crf=VIDEO_CRF, peso_max_mb=None):
     np.random.seed(seed)
     cx, cy = width // 2, height // 2
     # scala anisotropica sui due assi (invece di un unico raggio isotropo):
@@ -4038,7 +4047,7 @@ def genera_video(feat, path_out, path_audio, width, height, colore_bg, colore_ba
     fade_alpha = motore["fade"]
     t1_arr = np.arange(n_step, dtype=np.float64)   # indice pre-calcolato una sola volta
 
-    proc, path_log = _apri_ffmpeg(path_out, path_audio, width, height, fps, feat["durata"], crf)
+    proc, path_log = _apri_ffmpeg(path_out, path_audio, width, height, fps, feat["durata"], crf, peso_max_mb)
 
     canvas = np.zeros((height, width, 3), dtype=np.float32)
     bg = np.array(colore_bg, dtype=np.float32)
@@ -4363,12 +4372,18 @@ def main():
             "Reattivita' audio :: Audio reactivity", 0.5, 2.0, 1.2, 0.1,
             help="Quanto l'audio influenza ampiezza/frequenze del pattern"
         )
+        peso_max_mb = st.slider(
+            "Peso massimo video (MB) :: Max video size (MB)", 30, 400, PESO_MAX_MB, 10,
+            help="Tetto garantito: se il brano e la forma farebbero un file piu' grande, la "
+                 "qualita' scende quanto basta per restare sotto. Piu' basso = video piu' leggeri "
+                 "e lunghi, meno qualita' :: Guaranteed cap: if the track and shape would make a "
+                 "bigger file, quality drops just enough to stay under it"
+        )
         qualita_label = st.selectbox(
             "Qualita' video :: Video quality", list(QUALITA_VIDEO.keys()),
-            help="Auto = la migliore (CRF piu' basso) che tiene il file sotto circa "
-                 f"{PESO_MAX_MB} MB; le forme a pattern fitti (Maschera, Soglia, Tappeto, "
-                 "Isolinee, Reticolo) pesano molto :: Auto = best quality (lowest CRF) keeping "
-                 f"the file under about {PESO_MAX_MB} MB; dense-pattern shapes get heavy"
+            help="Auto = la migliore (CRF piu' basso) la cui stima rientra nel peso massimo; "
+                 "il tetto resta comunque garantito :: Auto = best quality (lowest CRF) whose "
+                 "estimate fits the size cap; the cap is guaranteed either way"
         )
 
     def hex_a_bgr(hex_str):
@@ -4438,14 +4453,15 @@ def main():
         except Exception:   # Streamlit piu' vecchio: parametro storico
             st.image(anteprima_rgb, caption=didascalia, use_container_width=True)
 
-        crf = scegli_crf(forma, feat["durata"], width, height, QUALITA_VIDEO[qualita_label])
+        crf = scegli_crf(forma, feat["durata"], width, height, QUALITA_VIDEO[qualita_label], peso_max_mb)
         tempo_s, peso_mb = stima_render(forma, feat["durata"], width, height, densita, crf)
         st.caption(
             f"Render stimato :: Estimated render ~ {_formatta_durata(tempo_s)} per questo brano "
             f"({tempo_s / feat['durata'] * 60:.0f}s ogni minuto) | "
-            f"peso video :: video size ~ {peso_mb:.0f} MB (CRF {crf}) "
-            "- indicativo, misurato su un server di test, Streamlit Cloud puo' essere piu' lento :: "
-            "indicative, measured on a test server, Streamlit Cloud may be slower"
+            f"peso video :: video size ~ {peso_mb:.0f} MB tipico (CRF {crf}), mai oltre "
+            f"{peso_max_mb} MB :: typical, never above {peso_max_mb} MB - il peso vero dipende dal "
+            "brano (piu' denso = piu' pesante) e il render su Streamlit Cloud puo' essere piu' lento :: "
+            "real size depends on the track (denser = heavier) and Streamlit Cloud may render slower"
         )
         if tempo_s > 600:
             st.warning(
@@ -4453,13 +4469,15 @@ def main():
                 "brano piu' corto o una forma piu' leggera :: Long render: keep the tab open, or use "
                 "a shorter track or a lighter shape"
             )
-        if peso_mb > PESO_MAX_MB:
-            st.warning(
-                f"Peso stimato alto ({peso_mb:.0f} MB): su server con poca RAM il render o il "
-                "download potrebbero fallire. Prova una qualita' piu' leggera, un brano piu' corto "
-                f"o un'altra forma :: High estimated size ({peso_mb:.0f} MB): on low-RAM servers "
-                "render or download may fail. Try a lighter quality, a shorter track or another shape"
+        kbps_video = peso_max_mb * 8000.0 / max(feat["durata"], 1.0) * 0.92 - 192
+        if kbps_video < 1500:
+            st.info(
+                f"Con il tetto di {peso_max_mb} MB su {feat['durata']:.0f}s il bitrate video e' "
+                f"limitato a ~{max(300, kbps_video):.0f} kbps: le forme dense possono perdere dettaglio. "
+                "Alza il peso massimo per piu' qualita' :: With this cap the video bitrate is limited: "
+                "dense shapes may lose detail. Raise the max size for more quality"
             )
+
         if st.button("Genera video :: Generate video", type="primary"):
             path_in = st.session_state["basicart_audio_path"]
             with tempfile.TemporaryDirectory() as tmp:
@@ -4469,7 +4487,7 @@ def main():
                     colore_bassi, colore_medi, colore_alti, forma,
                     densita=densita, spessore=spessore, reattivita=reattivita, frase=frase,
                     dimensione_testo=dimensione_testo, font_scelto=font_scelto, lettere_extra=lettere_extra, sovrapponi=sovrapponi,
-                    pixel_sort=pixel_sort, crf=crf,
+                    pixel_sort=pixel_sort, crf=crf, peso_max_mb=peso_max_mb,
                 )
 
                 with open(path_finale, "rb") as f:
