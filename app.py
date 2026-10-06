@@ -7,10 +7,10 @@ usando un motore grafico ispirato al BASIC primitivo anni '80
 (FOR/NEXT, PLOT, funzioni trigonometriche) pilotato da analisi
 DSP pura del segnale (librosa). Nessun modello AI/neurale.
 
-Due motori grafici disponibili (stessa famiglia di equazioni,
-proiezioni diverse):
-- "Deriva"     : x=f(t2), y=f(t1)                  (coordinate cartesiane)
-- "Fioritura"  : r=f(t2), a=f(t1), x=r*cos(a) ...  (coordinate polari)
+39 forme nel catalogo FORME/MOTORI (equazioni parametriche, automi,
+frattali, campi, pattern binari), tutte con la stessa firma: ogni forma
+legge basse/medie/alte, onset e RMS del brano e disegna un fotogramma.
+Effetto globale opzionale: pixel sorting audio-reattivo.
 
 Loop507 protocol:
 - py_compile / pyflakes zero warnings
@@ -40,11 +40,68 @@ from PIL import Image, ImageDraw, ImageFont
 FPS = 30
 MAX_DURATION_S = 240             # cap di sicurezza per il rendering (4 minuti)
 
-# qualita H.264: CRF piu alto = file piu piccoli (18 ~ quasi lossless, 23 = standard).
-# Le forme a pattern binari fitti (Tappeto, Reticolo, Soglia, Maschera) pesano molto: a CRF 23
-# ~2 MB/s a 720p (a CRF 18 ~3 MB/s). Per brani lunghi alzare il CRF (es. 28) riduce ancora.
+# qualita H.264: CRF piu alto = file piu piccoli (23 = standard, 18 ~ quasi lossless).
+# Il CRF effettivo si sceglie dalla UI ("Auto" = il piu' basso che rientra in PESO_MAX_MB).
 VIDEO_CRF = 23
 VIDEO_PRESET = "veryfast"
+
+# Stima di render e peso del video, MISURATA a 720p / CRF 23 su audio di prova (valori
+# indicativi; il server reale puo' essere piu' lento):
+#   forma -> (secondi di calcolo per secondo di audio, MB di video per secondo di audio)
+# Il peso dipende molto dalla forma: i pattern binari fitti (Maschera, Soglia, Tappeto,
+# Isolinee, Reticolo) pesano 1.3-2 MB/s, le forme sottili meno di 0.1 MB/s.
+STIMA_FORMA = {
+    "Deriva (cartesiana)": (1.31, 1.05),
+    "Fioritura (polare)": (0.96, 0.73),
+    "Pulviscolo (cartesiana)": (0.87, 0.44),
+    "Graffio (random walk)": (0.74, 0.11),
+    "Sismografo (verticali)": (0.89, 0.08),
+    "Frontiera (piano complesso)": (2.63, 0.25),
+    "Aritmia (verticali)": (0.78, 0.07),
+    "Iscrizione (testo a tempo)": (0.62, 0.04),
+    "Sinapsi (rete)": (0.78, 0.14),
+    "Labirinto (tasselli)": (1.19, 0.58),
+    "Risonanza (placca)": (1.01, 0.34),
+    "Statica (automa)": (1.11, 0.28),
+    "Poliedro (wireframe)": (0.73, 0.16),
+    "Epicicli (Fourier)": (0.56, 0.03),
+    "Plasma (interferenza)": (2.84, 0.26),
+    "Cometa (starfield prospettico)": (0.74, 0.20),
+    "Magma (metaballs)": (4.93, 0.14),
+    "Mosaico (celle di Voronoi)": (3.85, 0.25),
+    "Galleria (tunnel prospettico)": (1.09, 0.21),
+    "Braci (fuoco algoritmico)": (1.61, 0.16),
+    "Vita (automa cellulare 2D)": (0.77, 0.10),
+    "Morfogenesi (reazione-diffusione)": (1.06, 0.10),
+    "Increspatura (onde d'impatto)": (0.52, 0.01),
+    "Formica (automa di Langton)": (0.69, 0.04),
+    "Circuito (Wireworld)": (0.69, 0.04),
+    "Lama (3 linee)": (0.74, 0.02),
+    "Radici (frattale di Newton)": (1.51, 0.32),
+    "Flusso (flow field)": (0.62, 0.09),
+    "Muffa (Physarum)": (1.22, 0.22),
+    "Maschera (bitwise rotozoom)": (1.72, 1.99),
+    "Traccia (forma d'onda XY)": (0.78, 0.52),
+    "Reticolo (moire)": (1.68, 1.29),
+    "Corde (curve a filo)": (0.75, 0.49),
+    "Soglia (dithering a ordine)": (1.49, 1.95),
+    "Partizione (rettangoli ricorsivi)": (1.02, 0.08),
+    "Nastri (barre alla Kefrens)": (1.07, 0.18),
+    "Percorso (curva di Hilbert)": (0.81, 0.11),
+    "Isolinee (curve di livello)": (2.26, 1.32),
+    "Tappeto (Sierpinski base 3)": (2.00, 1.87),
+}
+# peso relativo al CRF 23 (misurato su Deriva, Tappeto, Isolinee)
+FATTORE_PESO_CRF = {23: 1.0, 28: 0.65, 32: 0.45}
+# oltre questo peso stimato (MB) il video e' a rischio su RAM limitata (Streamlit Cloud):
+# la qualita' "Auto" alza il CRF finche' la stima rientra, e la UI avvisa se non basta
+PESO_MAX_MB = 250
+QUALITA_VIDEO = {
+    "Auto": "auto",
+    "Standard (CRF 23)": 23,
+    "Leggera (CRF 28)": 28,
+    "Minima (CRF 32)": 32,
+}
 
 RISOLUZIONI = {
     "16:9  (1280x720)": (1280, 720),
@@ -3849,7 +3906,7 @@ MOTORI = {
 }
 
 
-def _apri_ffmpeg(path_out, path_audio, width, height, fps, durata):
+def _apri_ffmpeg(path_out, path_audio, width, height, fps, durata, crf=VIDEO_CRF):
     """Avvia ffmpeg con i frame grezzi BGR da stdin: UNA sola codifica
     H.264 con l'audio gia' dentro (prima: mp4v di OpenCV + ricodifica
     libx264 di MoviePy = doppia perdita di qualita' e doppio tempo).
@@ -3861,7 +3918,7 @@ def _apri_ffmpeg(path_out, path_audio, width, height, fps, durata):
         "-r", str(fps), "-i", "-",
         "-i", path_audio,
         "-map", "0:v:0", "-map", "1:a:0",
-        "-c:v", "libx264", "-preset", VIDEO_PRESET, "-crf", str(VIDEO_CRF), "-pix_fmt", "yuv420p",
+        "-c:v", "libx264", "-preset", VIDEO_PRESET, "-crf", str(int(crf)), "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "192k",
         "-t", f"{durata:.3f}", "-movflags", "+faststart",
         path_out,
@@ -3929,9 +3986,45 @@ def applica_pixel_sort(frame, feat, i, forza, seed=507):
     return risultato
 
 
+def stima_render(forma, durata_s, width, height, densita, crf):
+    """Tempo di calcolo (s) e peso del video (MB) indicativi, dalla tabella misurata
+    STIMA_FORMA. Il tempo ha una base fissa (codifica + dissolvenza) che non dipende dalla
+    forma; solo la parte di disegno scala con la densita' (e solo per le forme che usano
+    n_step). Tempo e peso scalano coi pixel del formato."""
+    s_per_s, mb_per_s = STIMA_FORMA.get(forma, (1.5, 1.0))
+    scala_px = (width * height) / (1280 * 720)
+    base = 0.5
+    parte_forma = max(0.0, s_per_s - base)
+    if MOTORI[forma]["n_step"] > 100:
+        parte_forma *= densita
+    tempo = (base + parte_forma) * scala_px * durata_s
+    peso = mb_per_s * FATTORE_PESO_CRF.get(crf, 1.0) * scala_px * durata_s
+    return tempo, peso
+
+
+def scegli_crf(forma, durata_s, width, height, qualita):
+    """qualita = "auto" oppure un CRF fisso. In auto: il CRF piu' basso (migliore) fra
+    23/28/32 la cui stima di peso rientra in PESO_MAX_MB; se nessuno rientra, 32."""
+    if qualita != "auto":
+        return int(qualita)
+    for crf in (23, 28, 32):
+        _t, peso = stima_render(forma, durata_s, width, height, 1.0, crf)
+        if peso <= PESO_MAX_MB:
+            return crf
+    return 32
+
+
+def _formatta_durata(secondi):
+    secondi = int(round(secondi))
+    if secondi < 90:
+        return f"{secondi}s"
+    return f"{secondi // 60}m{secondi % 60:02d}s"
+
+
 def genera_video(feat, path_out, path_audio, width, height, colore_bg, colore_bassi, colore_medi, colore_alti,
                   forma, fps=FPS, seed=507, densita=1.0, spessore=2, reattivita=1.0, frase="",
-                  dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, pixel_sort=0.0):
+                  dimensione_testo=1.0, font_scelto=0, lettere_extra=40, sovrapponi=False, pixel_sort=0.0,
+                  crf=VIDEO_CRF):
     np.random.seed(seed)
     cx, cy = width // 2, height // 2
     # scala anisotropica sui due assi (invece di un unico raggio isotropo):
@@ -3945,7 +4038,7 @@ def genera_video(feat, path_out, path_audio, width, height, colore_bg, colore_ba
     fade_alpha = motore["fade"]
     t1_arr = np.arange(n_step, dtype=np.float64)   # indice pre-calcolato una sola volta
 
-    proc, path_log = _apri_ffmpeg(path_out, path_audio, width, height, fps, feat["durata"])
+    proc, path_log = _apri_ffmpeg(path_out, path_audio, width, height, fps, feat["durata"], crf)
 
     canvas = np.zeros((height, width, 3), dtype=np.float32)
     bg = np.array(colore_bg, dtype=np.float32)
@@ -4263,11 +4356,19 @@ def main():
         )
         spessore = st.slider(
             "Spessore :: Thickness", 1, 5, 2, 1,
-            help="Spessore linee (Ellisse) o dimensione punti (Loto)"
+            help="Spessore delle linee o dimensione dei punti, a seconda della forma :: "
+                 "Line thickness or point size, depending on the shape"
         )
         reattivita = st.slider(
             "Reattivita' audio :: Audio reactivity", 0.5, 2.0, 1.2, 0.1,
             help="Quanto l'audio influenza ampiezza/frequenze del pattern"
+        )
+        qualita_label = st.selectbox(
+            "Qualita' video :: Video quality", list(QUALITA_VIDEO.keys()),
+            help="Auto = la migliore (CRF piu' basso) che tiene il file sotto circa "
+                 f"{PESO_MAX_MB} MB; le forme a pattern fitti (Maschera, Soglia, Tappeto, "
+                 "Isolinee, Reticolo) pesano molto :: Auto = best quality (lowest CRF) keeping "
+                 f"the file under about {PESO_MAX_MB} MB; dense-pattern shapes get heavy"
         )
 
     def hex_a_bgr(hex_str):
@@ -4337,13 +4438,28 @@ def main():
         except Exception:   # Streamlit piu' vecchio: parametro storico
             st.image(anteprima_rgb, caption=didascalia, use_container_width=True)
 
-        n_step_stimato = MOTORI[forma]["n_step"] * densita
-        fattore_forma = n_step_stimato / 900
+        crf = scegli_crf(forma, feat["durata"], width, height, QUALITA_VIDEO[qualita_label])
+        tempo_s, peso_mb = stima_render(forma, feat["durata"], width, height, densita, crf)
         st.caption(
-            "Tempo di render stimato :: Estimated render time ~ "
-            f"{(width * height) / (1280 * 720) * 0.55 * fattore_forma:.0f}s ogni minuto di brano "
-            "(indicativo, dipende dal server)"
+            f"Render stimato :: Estimated render ~ {_formatta_durata(tempo_s)} per questo brano "
+            f"({tempo_s / feat['durata'] * 60:.0f}s ogni minuto) | "
+            f"peso video :: video size ~ {peso_mb:.0f} MB (CRF {crf}) "
+            "- indicativo, misurato su un server di test, Streamlit Cloud puo' essere piu' lento :: "
+            "indicative, measured on a test server, Streamlit Cloud may be slower"
         )
+        if tempo_s > 600:
+            st.warning(
+                f"Render lungo (~{_formatta_durata(tempo_s)}): tieni la scheda aperta, oppure usa un "
+                "brano piu' corto o una forma piu' leggera :: Long render: keep the tab open, or use "
+                "a shorter track or a lighter shape"
+            )
+        if peso_mb > PESO_MAX_MB:
+            st.warning(
+                f"Peso stimato alto ({peso_mb:.0f} MB): su server con poca RAM il render o il "
+                "download potrebbero fallire. Prova una qualita' piu' leggera, un brano piu' corto "
+                f"o un'altra forma :: High estimated size ({peso_mb:.0f} MB): on low-RAM servers "
+                "render or download may fail. Try a lighter quality, a shorter track or another shape"
+            )
         if st.button("Genera video :: Generate video", type="primary"):
             path_in = st.session_state["basicart_audio_path"]
             with tempfile.TemporaryDirectory() as tmp:
@@ -4353,7 +4469,7 @@ def main():
                     colore_bassi, colore_medi, colore_alti, forma,
                     densita=densita, spessore=spessore, reattivita=reattivita, frase=frase,
                     dimensione_testo=dimensione_testo, font_scelto=font_scelto, lettere_extra=lettere_extra, sovrapponi=sovrapponi,
-                    pixel_sort=pixel_sort,
+                    pixel_sort=pixel_sort, crf=crf,
                 )
 
                 with open(path_finale, "rb") as f:
